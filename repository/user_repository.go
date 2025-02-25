@@ -47,6 +47,8 @@ func (r *UserRepository) CreateUser(ctx context.Context, req *AuthUserAdminServi
 		return "", status.Errorf(codes.Internal, "failed to hash password: %v", err)
 	}
 
+	salt := uuid.New().String()
+
 	user := db.User{
 		ID:                uuid.New().String(),
 		FirstName:         req.FirstName,
@@ -56,7 +58,8 @@ func (r *UserRepository) CreateUser(ctx context.Context, req *AuthUserAdminServi
 		PrimaryLanguageID: req.PrimaryLanguageID,
 		Email:             req.Email,
 		AuthType:          req.AuthType,
-		Password:          string(hashedPassword),
+		Salt:              salt,
+		HashedPassword:    string(hashedPassword) + salt,
 		MuteNotifications: req.MuteNotifications,
 		Github:            req.Socials.Github,
 		Twitter:           req.Socials.Twitter,
@@ -91,6 +94,24 @@ func (r *UserRepository) CreateUser(ctx context.Context, req *AuthUserAdminServi
 	return user.ID, nil
 }
 
+func (r *UserRepository) CheckUserPassword(ctx context.Context, userID, password string) (bool, error) {
+	var user db.User
+	if err := r.db.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
+		return false, status.Errorf(codes.Internal, "failed to retrieve user: %v", err)
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.HashedPassword), []byte(password+user.Salt)); err != nil {
+		return false, status.Errorf(codes.Unauthenticated, "invalid credentials: %v", err)
+	}
+	return true, nil
+}
+
+func (r *UserRepository) CheckAdminPassword(ctx context.Context, password string) (bool, error) {
+	if password != r.config.AdminPassword {
+		return false, status.Errorf(codes.Unauthenticated, "invalid credentials")
+	}
+	return true, nil
+}
+
 func (r *UserRepository) GetUserByEmail(ctx context.Context, email string) (string, string, string, bool, error) {
 	var user db.User
 	if err := r.db.WithContext(ctx).Where("email = ? AND deleted_at IS NULL", email).First(&user).Error; err != nil {
@@ -99,7 +120,7 @@ func (r *UserRepository) GetUserByEmail(ctx context.Context, email string) (stri
 		}
 		return "", "", "", false, status.Errorf(codes.Internal, "failed to retrieve user: %v", err)
 	}
-	return user.ID, user.Password, user.Role, user.IsVerified, nil
+	return user.ID, user.HashedPassword, user.Role, user.IsVerified, nil
 }
 
 func (r *UserRepository) UpdateProfile(ctx context.Context, req *AuthUserAdminService.UpdateProfileRequest) error {
@@ -294,7 +315,7 @@ func (r *UserRepository) CreateUserAdmin(ctx context.Context, req *AuthUserAdmin
 		PrimaryLanguageID: req.PrimaryLanguageID,
 		Email:             req.Email,
 		AuthType:          req.AuthType,
-		Password:          string(hashedPassword),
+		HashedPassword:    string(hashedPassword),
 		MuteNotifications: req.MuteNotifications,
 		Github:            req.Socials.Github,
 		Twitter:           req.Socials.Twitter,
@@ -334,7 +355,7 @@ func (r *UserRepository) UpdateUserAdmin(ctx context.Context, req *AuthUserAdmin
 		if err != nil {
 			return status.Errorf(codes.Internal, "failed to hash password: %v", err)
 		}
-		user.Password = string(hashedPassword)
+		user.HashedPassword = string(hashedPassword)
 	}
 
 	if err := r.db.WithContext(ctx).Model(&user).Where("id = ? AND deleted_at IS NULL", req.UserID).Updates(user).Error; err != nil {

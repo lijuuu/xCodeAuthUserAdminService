@@ -18,6 +18,8 @@ type Config struct {
 	SMTPHost     string // SMTP host (e.g., smtp.gmail.com)
 	SMTPPort     string // SMTP port (e.g., "587" for TLS)
 	SMTPUser     string // SMTP username (e.g., your email)
+	AdminPassword string
+	AdminUsername string
 }
 
 // LoadConfig loads configuration from environment variables
@@ -35,6 +37,8 @@ func LoadConfig() Config {
 		SMTPHost:     getEnv("SMTPHOST", "smtp.gmail.com"),
 		SMTPPort:     getEnv("SMTPPORT", "587"),
 		SMTPUser:     getEnv("SMTPUSER", "xcodedev@gmail.com"),
+		AdminPassword: getEnv("ADMINPASSWORD", "admin"),
+		AdminUsername: getEnv("ADMINUSERNAME", "admin"),
 	}
 
 	fmt.Println(config)

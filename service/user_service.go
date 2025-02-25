@@ -73,7 +73,7 @@ func (s *AuthUserAdminService) RegisterUser(ctx context.Context, req *authUserAd
 
 // LoginUser handles user login with JWT generation
 func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdminService.LoginUserRequest) (*authUserAdminService.LoginUserResponse, error) {
-	userID, hashedPassword, role, isVerified, err := s.repo.GetUserByEmail(ctx, req.Email)
+	userID, _, role, isVerified, err := s.repo.GetUserByEmail(ctx, req.Email)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to retrieve user: %v", err)
 	}
@@ -81,8 +81,16 @@ func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdmin
 		return nil, status.Errorf(codes.NotFound, "user not found")
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(req.Password)); err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "invalid credentials: %v", err)
+	// if err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(req.Password)); err != nil {
+	// 	return nil, status.Errorf(codes.Unauthenticated, "invalid credentials: %v", err)
+	// }
+
+	valid, err := s.repo.CheckUserPassword(ctx, userID, req.Password)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to check user password: %v", err)
+	}
+	if !valid {
+		return nil, status.Errorf(codes.Unauthenticated, "invalid credentials")
 	}
 
 	if !isVerified {
@@ -191,7 +199,7 @@ func (s *AuthUserAdminService) VerifyUser(ctx context.Context, req *authUserAdmi
 }
 
 // SetTwoFactorAuth enables/disables 2FA
-func (s *AuthUserAdminService) SetTwoFactorAuth(ctx context.Context, req *authUserAdminService.SetTwoFactorAuthRequest) (*authUserAdminService.SetTwoFactorAuthResponse, error) {
+func (s *AuthUserAdminService) ToggleTwoFactorAuth(ctx context.Context, req *authUserAdminService.ToggleTwoFactorAuthRequest) (*authUserAdminService.ToggleTwoFactorAuthResponse, error) {
 
 	// Check if user exists
 	_, err := s.repo.GetUserProfile(ctx, req.UserID)
@@ -199,13 +207,25 @@ func (s *AuthUserAdminService) SetTwoFactorAuth(ctx context.Context, req *authUs
 		return nil, status.Errorf(codes.NotFound, "user not found: %v", err)
 	}
 
-	err = s.repo.Update2FAStatus(ctx, req.UserID, req.Enable)
+	// if err := bcrypt.CompareHashAndPassword([]byte(usr.), []byte(req.Password)); err != nil {
+	// 	return nil, status.Errorf(codes.Unauthenticated, "invalid credentials: %v", err)
+	// }
+
+	valid, err := s.repo.CheckUserPassword(ctx, req.UserID, req.Password)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to check user password: %v", err)
+	}
+	if !valid {
+		return nil, status.Errorf(codes.Unauthenticated, "invalid credentials")
+	}
+
+	err = s.repo.Update2FAStatus(ctx, req.UserID, req.TwoFactorAuth)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to update 2FA status: %v", err)
 	}
 
-	return &authUserAdminService.SetTwoFactorAuthResponse{
-		Message: fmt.Sprintf("2FA %s successfully", map[bool]string{true: "enabled", false: "disabled"}[req.Enable]),
+	return &authUserAdminService.ToggleTwoFactorAuthResponse{
+		Message: fmt.Sprintf("2FA has been %s successfully", map[bool]string{true: "enabled", false: "disabled"}[req.TwoFactorAuth]),
 	}, nil
 }
 

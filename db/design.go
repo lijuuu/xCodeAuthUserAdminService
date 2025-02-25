@@ -16,7 +16,8 @@ type User struct {
 	PrimaryLanguageID string         `gorm:"type:varchar(10);not null" json:"primary_language_id"`
 	Email             string         `gorm:"type:varchar(255);unique;not null;index" json:"email"`
 	AuthType          string         `gorm:"type:varchar(50);not null" json:"auth_type"`
-	Password          string         `gorm:"type:varchar(255);not null" json:"password"`
+	Salt              string         `gorm:"type:varchar(255);not null" json:"salt"`
+	HashedPassword    string         `gorm:"type:varchar(255);not null" json:"hashed_password"`
 	MuteNotifications bool           `gorm:"default:false;not null" json:"mute_notifications"`
 	IsBanned          bool           `gorm:"default:false;not null;index" json:"is_banned"`
 	BanReason         string         `gorm:"type:text" json:"ban_reason"`
