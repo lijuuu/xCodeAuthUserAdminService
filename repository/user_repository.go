@@ -184,12 +184,12 @@ func (r *UserRepository) FollowUser(ctx context.Context, followerID, followeeID 
 			return status.Errorf(codes.Internal, "failed to create following relationship: %v", err)
 		}
 
-		if err := tx.Create(&db.Follower{
-			FollowerID: followerID,
-			FolloweeID: followeeID,
-		}).Error; err != nil {
-			return status.Errorf(codes.Internal, "failed to create follower relationship: %v", err)
-		}
+		// if err := tx.Create(&db.Follower{
+		// 	FollowerID: followerID,
+		// 	FolloweeID: followeeID,
+		// }).Error; err != nil {
+		// 	return status.Errorf(codes.Internal, "failed to create follower relationship: %v", err)
+		// }
 		return nil
 	})
 }
@@ -200,9 +200,9 @@ func (r *UserRepository) UnfollowUser(ctx context.Context, followerID, followeeI
 			return status.Errorf(codes.Internal, "failed to delete following relationship: %v", err)
 		}
 
-		if err := tx.Where("follower_id = ? AND followee_id = ?", followerID, followeeID).Delete(&db.Follower{}).Error; err != nil {
-			return status.Errorf(codes.Internal, "failed to delete follower relationship: %v", err)
-		}
+		// if err := tx.Where("follower_id = ? AND followee_id = ?", followerID, followeeID).Delete(&db.Follower{}).Error; err != nil {
+		// 	return status.Errorf(codes.Internal, "failed to delete follower relationship: %v", err)
+		// }
 		return nil
 	})
 }
@@ -414,7 +414,9 @@ func (r *UserRepository) GetAllUsers(ctx context.Context, req *AuthUserAdminServ
 		return nil, 0, status.Errorf(codes.Internal, "failed to count users: %v", err)
 	}
 
-	if err := query.Limit(int(req.Limit)).Offset(int((req.Page - 1) * req.Limit)).Find(&users).Error; err != nil {
+	//Limit(int(req.Limit)).Offset(int((req.Page - 1) * req.Limit))
+
+	if err := query.Find(&users).Error; err != nil {
 		return nil, 0, status.Errorf(codes.Internal, "failed to retrieve users: %v", err)
 	}
 
@@ -499,9 +501,9 @@ func (r *UserRepository) CreateVerification(ctx context.Context, userID, email, 
 	return nil
 }
 
-func (r *UserRepository) VerifyUserToken(ctx context.Context, userID, token string) (bool, error) {
+func (r *UserRepository) VerifyUserToken(ctx context.Context, email, token string) (bool, error) {
 	var verification db.Verification
-	if err := r.db.WithContext(ctx).Where("user_id = ? AND token = ? AND expiry_at > ? AND used = ?", userID, token, time.Now(), false).First(&verification).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where("email = ? AND token = ? AND expiry_at > ? AND used = ?", email, token, time.Now(), false).First(&verification).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return false, nil
 		}
@@ -511,7 +513,7 @@ func (r *UserRepository) VerifyUserToken(ctx context.Context, userID, token stri
 	if err := r.db.WithContext(ctx).Model(&verification).Update("used", true).Error; err != nil {
 		return false, status.Errorf(codes.Internal, "failed to mark token as used: %v", err)
 	}
-	if err := r.db.WithContext(ctx).Model(&db.User{}).Where("id = ?", userID).Update("is_verified", true).Error; err != nil {
+	if err := r.db.WithContext(ctx).Model(&db.User{}).Where("email = ?", email).Update("is_verified", true).Error; err != nil {
 		return false, status.Errorf(codes.Internal, "failed to update verification status: %v", err)
 	}
 	return true, nil
@@ -526,12 +528,14 @@ func (r *UserRepository) ResendOTP(ctx context.Context, userID string) (string, 
 		return "", status.Errorf(codes.Internal, "failed to retrieve user: %v", err)
 	}
 
-	if err := r.db.WithContext(ctx).Where("user_id = ? AND expiry_at > ? AND used = ?", userID, time.Now(), false).Delete(&db.Verification{}).Error; err != nil {
+	if err:= r.db.WithContext(ctx).Where("user_id = ? AND expiry_at > ? AND used = ?", userID, time.Now(), false).Delete(&db.Verification{}).Error; err != nil {
 		return "", status.Errorf(codes.Internal, "failed to clear existing OTP: %v", err)
 	}
 
+
 	otp := GenerateOTP(6)
 	verification := db.Verification{
+		ID:        uuid.New().String(),
 		UserID:    userID,
 		Email:     user.Email,
 		Token:     otp,
@@ -545,7 +549,7 @@ func (r *UserRepository) ResendOTP(ctx context.Context, userID string) (string, 
 
 	if err := r.SendVerificationEmail(user.Email, otp); err != nil {
 		log.Printf("Failed to send verification email: %v", err)
-		// Log for retry or notify admin, but proceed to allow resend
+		// return "", status.Errorf(codes.Internal, "failed to send verification email: %v", err)
 	}
 
 	return otp, nil
@@ -565,7 +569,7 @@ func (r *UserRepository) CreateForgotPasswordToken(ctx context.Context, email, t
 	}
 
 	forgot := db.ForgotPassword{
-		
+
 		ID:        uuid.New().String(),
 		UserID:    user.ID,
 		Email:     user.Email,
@@ -647,15 +651,11 @@ func (r *UserRepository) ChangeAuthenticatedPassword(ctx context.Context, userID
 
 // Helper functions
 func (r *UserRepository) SendVerificationEmail(to, otp string) error {
-	subject := "Verify Your Email"
-	body := fmt.Sprintf("Your verification OTP is: %s. It expires in 30 minutes. %s", otp, r.config.APPURL)
-	return utils.SendEmail(r.config, to, subject, body)
+	return utils.SendOTPEmail(to, "user", otp, 30)
 }
 
 func (r *UserRepository) SendForgotPasswordEmail(to, resetLink string) error {
-	subject := "Password Reset Request"
-	body := fmt.Sprintf("Click the link to reset your password: %s. It expires in 1 hour. %s", resetLink, r.config.APPURL)
-	return utils.SendEmail(r.config, to, subject, body)
+	return utils.SendForgotPasswordEmail(to, resetLink)
 }
 
 func GenerateOTP(length int) string {

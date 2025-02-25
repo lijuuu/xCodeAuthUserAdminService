@@ -14,12 +14,13 @@ type Claims struct {
 }
 
 // GenerateJWT creates a new JWT
-func GenerateJWT(userID, role, secret string, duration time.Duration) (string, int32, error) {
+func GenerateJWT(userID, role, secret string, tokenDuration time.Duration) (string, int32, error) {
+	expirationTime := time.Now().Add(tokenDuration)
 	claims := &Claims{
 		ID:   userID,
 		Role: role,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * duration)),
+			ExpiresAt: jwt.NewNumericDate(expirationTime),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}
@@ -28,5 +29,7 @@ func GenerateJWT(userID, role, secret string, duration time.Duration) (string, i
 	if err != nil {
 		return "", 0, err
 	}
-	return tokenString, 86400, nil // 24 hours in seconds
+	// Return expiration in seconds based on actual duration
+	expiresIn := int32(tokenDuration / time.Second)
+	return tokenString, expiresIn, nil
 }

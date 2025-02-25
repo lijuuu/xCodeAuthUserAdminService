@@ -4,19 +4,18 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"xcode/repository"
 	"xcode/utils"
 
 	configs "xcode/configs"
-	authUserAdminService "github.com/lijuuu/GlobalProtoXcode/AuthUserAdminService"
+
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	authUserAdminService "github.com/lijuuu/GlobalProtoXcode/AuthUserAdminService"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -28,8 +27,9 @@ type AuthUserAdminService struct {
 	authUserAdminService.UnimplementedAuthUserAdminServiceServer
 }
 
-// NewUserService creates a new UserService instance
+// NewAuthUserAdminService initializes and returns a new AuthUserAdminService
 func NewAuthUserAdminService(repo *repository.UserRepository, config *configs.Config, jwtSecret string) *AuthUserAdminService {
+	fmt.Println(jwtSecret)
 	return &AuthUserAdminService{
 		repo:      repo,
 		config:    config,
@@ -38,23 +38,14 @@ func NewAuthUserAdminService(repo *repository.UserRepository, config *configs.Co
 }
 
 // extractUserIDFromContext extracts the user ID from the gRPC context (e.g., from JWT metadata)
-func (s *AuthUserAdminService) extractUserIDFromContext(ctx context.Context) (string, error) {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok || len(md["authorization"]) == 0 {
-		return "", status.Errorf(codes.Unauthenticated, "authorization token missing")
-	}
+// func (s *AuthUserAdminService) extractUserIDFromContext(ctx context.Context) (string, error) {
+// 	md, ok := metadata.FromIncomingContext(ctx)
+// 	if !ok || len(md["userID"]) == 0 {
+// 		return "", status.Errorf(codes.Unauthenticated, "authorization token missing")
+// 	}
 
-	tokenString := strings.TrimPrefix(md["authorization"][0], "Bearer ")
-	claims := &utils.Claims{}
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		return []byte(s.jwtSecret), nil
-	})
-	if err != nil || !token.Valid {
-		return "", status.Errorf(codes.Unauthenticated, "invalid token: %v", err)
-	}
-
-	return claims.ID, nil
-}
+// 	return md["userID"][0], nil
+// }
 
 // RegisterUser handles user registration and sends verification OTP
 func (s *AuthUserAdminService) RegisterUser(ctx context.Context, req *authUserAdminService.RegisterUserRequest) (*authUserAdminService.RegisterUserResponse, error) {
@@ -187,7 +178,7 @@ func (s *AuthUserAdminService) ResendOTP(ctx context.Context, req *authUserAdmin
 
 // VerifyUser verifies a user with an OTP
 func (s *AuthUserAdminService) VerifyUser(ctx context.Context, req *authUserAdminService.VerifyUserRequest) (*authUserAdminService.VerifyUserResponse, error) {
-	verified, err := s.repo.VerifyUserToken(ctx, req.UserID, req.Token)
+	verified, err := s.repo.VerifyUserToken(ctx, req.Email, req.Token)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to verify user: %v", err)
 	}
@@ -201,18 +192,14 @@ func (s *AuthUserAdminService) VerifyUser(ctx context.Context, req *authUserAdmi
 
 // SetTwoFactorAuth enables/disables 2FA
 func (s *AuthUserAdminService) SetTwoFactorAuth(ctx context.Context, req *authUserAdminService.SetTwoFactorAuthRequest) (*authUserAdminService.SetTwoFactorAuthResponse, error) {
-	userID, err := s.extractUserIDFromContext(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "authentication required: %v", err)
-	}
 
 	// Check if user exists
-	_, err = s.repo.GetUserProfile(ctx, userID)
+	_, err := s.repo.GetUserProfile(ctx, req.UserID)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "user not found: %v", err)
 	}
 
-	err = s.repo.Update2FAStatus(ctx, userID, req.Enable)
+	err = s.repo.Update2FAStatus(ctx, req.UserID, req.Enable)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to update 2FA status: %v", err)
 	}
@@ -269,15 +256,7 @@ func (s *AuthUserAdminService) ChangePassword(ctx context.Context, req *authUser
 		return nil, status.Errorf(codes.InvalidArgument, "invalid password format: must be at least 8 characters, include an uppercase letter, and a digit")
 	}
 
-	userID, err := s.extractUserIDFromContext(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "authentication required: %v", err)
-	}
-	if userID != req.UserID {
-		return nil, status.Errorf(codes.PermissionDenied, "user ID mismatch")
-	}
-
-	err = s.repo.ChangeAuthenticatedPassword(ctx, req.UserID, req.OldPassword, req.NewPassword)
+	err := s.repo.ChangeAuthenticatedPassword(ctx, req.UserID, req.OldPassword, req.NewPassword)
 	if err != nil {
 		return nil, err
 	}
@@ -289,13 +268,8 @@ func (s *AuthUserAdminService) ChangePassword(ctx context.Context, req *authUser
 
 // UpdateProfile updates user profile
 func (s *AuthUserAdminService) UpdateProfile(ctx context.Context, req *authUserAdminService.UpdateProfileRequest) (*authUserAdminService.UpdateProfileResponse, error) {
-	userID, err := s.extractUserIDFromContext(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "authentication required: %v", err)
-	}
-	req.UserID = userID // Ensure userID matches authenticated user
 
-	err = s.repo.UpdateProfile(ctx, req)
+	err := s.repo.UpdateProfile(ctx, req)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to update profile: %v", err)
 	}
@@ -306,13 +280,7 @@ func (s *AuthUserAdminService) UpdateProfile(ctx context.Context, req *authUserA
 
 // UpdateProfileImage updates the user's profile image
 func (s *AuthUserAdminService) UpdateProfileImage(ctx context.Context, req *authUserAdminService.UpdateProfileImageRequest) (*authUserAdminService.UpdateProfileImageResponse, error) {
-	userID, err := s.extractUserIDFromContext(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "authentication required: %v", err)
-	}
-	req.UserID = userID // Ensure userID matches authenticated user
-
-	err = s.repo.UpdateProfileImage(ctx, req)
+	err := s.repo.UpdateProfileImage(ctx, req)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to update profile image: %v", err)
 	}
@@ -324,12 +292,6 @@ func (s *AuthUserAdminService) UpdateProfileImage(ctx context.Context, req *auth
 
 // GetUserProfile retrieves a user's profile
 func (s *AuthUserAdminService) GetUserProfile(ctx context.Context, req *authUserAdminService.GetUserProfileRequest) (*authUserAdminService.GetUserProfileResponse, error) {
-	userID, err := s.extractUserIDFromContext(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "authentication required: %v", err)
-	}
-	req.UserID = userID // Ensure userID matches authenticated user
-
 	resp, err := s.repo.GetUserProfile(ctx, req.UserID)
 	if err != nil {
 		return nil, err
@@ -351,12 +313,7 @@ func (s *AuthUserAdminService) CheckBanStatus(ctx context.Context, req *authUser
 
 // FollowUser adds a follow relationship
 func (s *AuthUserAdminService) FollowUser(ctx context.Context, req *authUserAdminService.FollowUserRequest) (*authUserAdminService.FollowUserResponse, error) {
-	followerID, err := s.extractUserIDFromContext(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "authentication required: %v", err)
-	}
-
-	err = s.repo.FollowUser(ctx, followerID, req.UserID)
+	err := s.repo.FollowUser(ctx, req.UserID, req.UserID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to follow user: %v", err)
 	}
@@ -367,12 +324,7 @@ func (s *AuthUserAdminService) FollowUser(ctx context.Context, req *authUserAdmi
 
 // UnfollowUser removes a follow relationship
 func (s *AuthUserAdminService) UnfollowUser(ctx context.Context, req *authUserAdminService.UnfollowUserRequest) (*authUserAdminService.UnfollowUserResponse, error) {
-	followerID, err := s.extractUserIDFromContext(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "authentication required: %v", err)
-	}
-
-	err = s.repo.UnfollowUser(ctx, followerID, req.UserID)
+	err := s.repo.UnfollowUser(ctx, req.UserID, req.UserID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to unfollow user: %v", err)
 	}
@@ -452,11 +404,7 @@ func (s *AuthUserAdminService) UpdateUserAdmin(ctx context.Context, req *authUse
 
 // BlockUser sets a user as banned
 func (s *AuthUserAdminService) BlockUser(ctx context.Context, req *authUserAdminService.BlockUserRequest) (*authUserAdminService.BlockUserResponse, error) {
-	adminID, err := s.extractUserIDFromContext(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "authentication required: %v", err)
-	}
-	isAdmin, err := s.repo.IsAdmin(ctx, adminID)
+	isAdmin, err := s.repo.IsAdmin(ctx, req.UserID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
 	}
@@ -475,11 +423,7 @@ func (s *AuthUserAdminService) BlockUser(ctx context.Context, req *authUserAdmin
 
 // UnblockUser removes a user's ban
 func (s *AuthUserAdminService) UnblockUser(ctx context.Context, req *authUserAdminService.UnblockUserAdminRequest) (*authUserAdminService.UnblockUserAdminResponse, error) {
-	adminID, err := s.extractUserIDFromContext(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "authentication required: %v", err)
-	}
-	isAdmin, err := s.repo.IsAdmin(ctx, adminID)
+	isAdmin, err := s.repo.IsAdmin(ctx, req.UserID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
 	}
@@ -498,11 +442,7 @@ func (s *AuthUserAdminService) UnblockUser(ctx context.Context, req *authUserAdm
 
 // VerifyAdminUser verifies a user (admin action)
 func (s *AuthUserAdminService) VerifyAdminUser(ctx context.Context, req *authUserAdminService.VerifyAdminUserRequest) (*authUserAdminService.VerifyAdminUserResponse, error) {
-	adminID, err := s.extractUserIDFromContext(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "authentication required: %v", err)
-	}
-	isAdmin, err := s.repo.IsAdmin(ctx, adminID)
+	isAdmin, err := s.repo.IsAdmin(ctx, req.UserID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
 	}
@@ -521,11 +461,7 @@ func (s *AuthUserAdminService) VerifyAdminUser(ctx context.Context, req *authUse
 
 // UnverifyUser un-verifies a user (admin action)
 func (s *AuthUserAdminService) UnverifyUser(ctx context.Context, req *authUserAdminService.UnverifyUserAdminRequest) (*authUserAdminService.UnverifyUserAdminResponse, error) {
-	adminID, err := s.extractUserIDFromContext(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "authentication required: %v", err)
-	}
-	isAdmin, err := s.repo.IsAdmin(ctx, adminID)
+	isAdmin, err := s.repo.IsAdmin(ctx, req.UserID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
 	}
@@ -544,11 +480,7 @@ func (s *AuthUserAdminService) UnverifyUser(ctx context.Context, req *authUserAd
 
 // SoftDeleteUserAdmin soft deletes a user
 func (s *AuthUserAdminService) SoftDeleteUserAdmin(ctx context.Context, req *authUserAdminService.SoftDeleteUserAdminRequest) (*authUserAdminService.SoftDeleteUserAdminResponse, error) {
-	adminID, err := s.extractUserIDFromContext(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "authentication required: %v", err)
-	}
-	isAdmin, err := s.repo.IsAdmin(ctx, adminID)
+	isAdmin, err := s.repo.IsAdmin(ctx, req.UserID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
 	}
@@ -567,17 +499,6 @@ func (s *AuthUserAdminService) SoftDeleteUserAdmin(ctx context.Context, req *aut
 
 // GetAllUsers retrieves a paginated list of users
 func (s *AuthUserAdminService) GetAllUsers(ctx context.Context, req *authUserAdminService.GetAllUsersRequest) (*authUserAdminService.GetAllUsersResponse, error) {
-	adminID, err := s.extractUserIDFromContext(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "authentication required: %v", err)
-	}
-	isAdmin, err := s.repo.IsAdmin(ctx, adminID)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
-	}
-	if !isAdmin {
-		return nil, status.Errorf(codes.PermissionDenied, "admin privileges required")
-	}
 
 	profiles, totalCount, err := s.repo.GetAllUsers(ctx, req)
 	if err != nil {

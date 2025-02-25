@@ -1,66 +1,174 @@
 package utils
 
 import (
-	"crypto/tls"
+	"errors"
 	"fmt"
-	"log"
 	"net/smtp"
+	"strings"
 
-	configs "xcode/configs"
+	"xcode/configs"
 )
 
-// SendEmail sends an email using SMTP
-func SendEmail(config *configs.Config, to string, subject string, body string) error {
-	// Configure SMTP auth
-	auth := smtp.PlainAuth("", config.SMTPUser, config.SMTPAppKey, config.SMTPHost)
+// EmailConfig holds SMTP configuration
+type EmailConfig struct {
+	From        string
+	AppPassword string
+	Host        string
+	Port        string
+}
 
-	// Set up the message
-	msg := []byte(fmt.Sprintf("To: %s\r\nSubject: %s\r\n\r\n%s", to, subject, body))
+// NewEmailConfig initializes email configuration from environment variables and app config
+func NewEmailConfig() *EmailConfig {
+	return &EmailConfig{
+		From:        "foodbuddycode@gmail.com",
+		AppPassword: configs.LoadConfig().SMTPAppKey,
+		Host:        "smtp.gmail.com",
+		Port:        "587",
+	}
+}
 
-	// Connect to the SMTP server
-	hostPort := fmt.Sprintf("%s:%s", config.SMTPHost, config.SMTPPort)
-	conn, err := tls.Dial("tcp", hostPort, &tls.Config{
-		InsecureSkipVerify: true, // For development; use false in production and set up proper certificates
-	})
-	if err != nil {
-		log.Printf("Failed to connect to SMTP server: %v", err)
-		return err
+// SendOTPEmail sends an OTP email with the OTP embedded in the verification link
+func SendOTPEmail(to, role, otp string, expiryTime uint64) error {
+	config := NewEmailConfig()
+	if config.AppPassword == "" {
+		return errors.New("SMTP app password not set in environment variables")
 	}
 
-	client, err := smtp.NewClient(conn, config.SMTPHost)
-	if err != nil {
-		log.Printf("Failed to create SMTP client: %v", err)
-		return err
-	}
-	defer client.Close()
+	auth := smtp.PlainAuth("", config.From, config.AppPassword, config.Host)
 
-	// Authenticate
-	if err = client.Auth(auth); err != nil {
-		log.Printf("SMTP authentication failed: %v", err)
-		return err
-	}
+	// Construct the verification URL with OTP embedded
+	appURL := strings.TrimSuffix(configs.LoadConfig().APPURL, "/")
+	verificationURL := fmt.Sprintf("%s/api/v1/auth/verify?email=%s&token=%s", appURL, to, otp)
 
-	// Set the sender and recipient
-	if err = client.Mail(config.SMTPUser); err != nil {
-		return err
-	}
-	if err = client.Rcpt(to); err != nil {
-		return err
-	}
+	// HTML email content
+	htmlContent := fmt.Sprintf(`
+	<!DOCTYPE html>
+	<html lang="en">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>FoodBuddy Email Verification</title>
+		<style>
+			.button {
+				background-color: #4CAF50;
+				border: none;
+				color: white;
+				padding: 15px 32px;
+				text-align: center;
+				text-decoration: none;
+				display: inline-block;
+				font-size: 16px;
+				margin: 4px 2px;
+				cursor: pointer;
+			}
+			.container {
+				font-family: Arial, sans-serif;
+				max-width: 600px;
+				margin: 0 auto;
+				padding: 20px;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="container">
+			<h1>FoodBuddy Email Verification</h1>
+			<p>Please verify your email address by clicking the button below:</p>
+			<p>Your OTP is: <strong>%s</strong> (expires in %d minutes)</p>
+			<a href="%s" class="button">Verify Email</a>
+			<p>If the button doesn't work, copy and paste this link into your browser:</p>
+			<p><a href="%s">%s</a></p>
+		</div>
+	</body>
+	</html>
+	`, otp, expiryTime, verificationURL, verificationURL, verificationURL)
+
+	// Email headers and body
+	msg := []byte(fmt.Sprintf(
+		"To: %s\r\n"+
+			"From: %s\r\n"+
+			"Subject: FoodBuddy Email Verification\r\n"+
+			"MIME-Version: 1.0\r\n"+
+			"Content-Type: text/html; charset=\"UTF-8\"\r\n"+
+			"\r\n"+
+			"%s", to, config.From, htmlContent))
 
 	// Send the email
-	w, err := client.Data()
+	addr := fmt.Sprintf("%s:%s", config.Host, config.Port)
+	err := smtp.SendMail(addr, auth, config.From, []string{to}, msg)
 	if err != nil {
-		return err
-	}
-	_, err = w.Write(msg)
-	if err != nil {
-		return err
-	}
-	err = w.Close()
-	if err != nil {
-		return err
+		return fmt.Errorf("failed to send OTP email: %v", err)
 	}
 
-	return client.Quit()
+	return nil
+}
+
+// SendForgotPasswordEmail sends a password reset email with the reset token in the link
+func SendForgotPasswordEmail(to, resetLink string) error {
+	config := NewEmailConfig()
+	if config.AppPassword == "" {
+		return errors.New("SMTP app password not set in environment variables")
+	}
+
+	auth := smtp.PlainAuth("", config.From, config.AppPassword, config.Host)
+
+	// HTML email content
+	htmlContent := fmt.Sprintf(`
+	<!DOCTYPE html>
+	<html lang="en">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>FoodBuddy Password Reset</title>
+		<style>
+			.button {
+				background-color: #4CAF50;
+				border: none;
+				color: white;
+				padding: 15px 32px;
+				text-align: center;
+				text-decoration: none;
+				display: inline-block;
+				font-size: 16px;
+				margin: 4px 2px;
+				cursor: pointer;
+			}
+			.container {
+				font-family: Arial, sans-serif;
+				max-width: 600px;
+				margin: 0 auto;
+				padding: 20px;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="container">
+			<h1>FoodBuddy Password Reset</h1>
+			<p>You requested a password reset. Click the button below to reset your password:</p>
+			<a href="%s" class="button">Reset Password</a>
+			<p>This link expires in 1 hour.</p>
+			<p>If the button doesn't work, copy and paste this link into your browser:</p>
+			<p><a href="%s">%s</a></p>
+		</div>
+	</body>
+	</html>
+	`, resetLink, resetLink, resetLink)
+
+	// Email headers and body
+	msg := []byte(fmt.Sprintf(
+		"To: %s\r\n"+
+			"From: %s\r\n"+
+			"Subject: FoodBuddy Password Reset Request\r\n"+
+			"MIME-Version: 1.0\r\n"+
+			"Content-Type: text/html; charset=\"UTF-8\"\r\n"+
+			"\r\n"+
+			"%s", to, config.From, htmlContent))
+
+	// Send the email
+	addr := fmt.Sprintf("%s:%s", config.Host, config.Port)
+	err := smtp.SendMail(addr, auth, config.From, []string{to}, msg)
+	if err != nil {
+		return fmt.Errorf("failed to send password reset email: %v", err)
+	}
+
+	return nil
 }

@@ -35,7 +35,7 @@ func main() {
 	}
 
 	grpcServer := grpc.NewServer()
-	authUserAdminProto.RegisterAuthUserAdminServiceServer(grpcServer, &authUserAdminService.UnimplementedAuthUserAdminServiceServer)
+	authUserAdminProto.RegisterAuthUserAdminServiceServer(grpcServer, authUserAdminService)
 
 	log.Printf("AuthUserAdminService gRPC server running on port %s", config.UserGRPCPort)
 	if err := grpcServer.Serve(lis); err != nil {
