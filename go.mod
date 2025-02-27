@@ -6,7 +6,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
-	github.com/lijuuu/GlobalProtoXcode v0.0.0-20250225114011-45d47f02dbe5
+	github.com/lijuuu/GlobalProtoXcode v0.0.0-20250227130933-5ac6475a8bc3
 	golang.org/x/crypto v0.30.0
 	google.golang.org/grpc v1.70.0
 	gorm.io/driver/postgres v1.5.11

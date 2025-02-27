@@ -28,7 +28,7 @@ func InitDB(dsn string) (*gorm.DB, error) {
 	sqlDB.SetConnMaxLifetime(time.Hour)
 
 	// Auto-migrate the schema
-	err = db.AutoMigrate(&User{}, &Following{}, &Follower{}, &Verification{}, &ForgotPassword{})
+	err = db.AutoMigrate(&User{}, &Following{}, &Follower{}, &Verification{}, &ForgotPassword{}, &Admin{}, &BanHistory{})
 	if err != nil {
 		return nil, err
 	}

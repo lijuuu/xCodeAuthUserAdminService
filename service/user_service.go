@@ -333,7 +333,7 @@ func (s *AuthUserAdminService) CheckBanStatus(ctx context.Context, req *authUser
 
 // FollowUser adds a follow relationship
 func (s *AuthUserAdminService) FollowUser(ctx context.Context, req *authUserAdminService.FollowUserRequest) (*authUserAdminService.FollowUserResponse, error) {
-	err := s.repo.FollowUser(ctx, req.UserID, req.UserID)
+	err := s.repo.FollowUser(ctx, req.FollowerID, req.FolloweeID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to follow user: %v", err)
 	}
@@ -344,7 +344,7 @@ func (s *AuthUserAdminService) FollowUser(ctx context.Context, req *authUserAdmi
 
 // UnfollowUser removes a follow relationship
 func (s *AuthUserAdminService) UnfollowUser(ctx context.Context, req *authUserAdminService.UnfollowUserRequest) (*authUserAdminService.UnfollowUserResponse, error) {
-	err := s.repo.UnfollowUser(ctx, req.UserID, req.UserID)
+	err := s.repo.UnfollowUser(ctx, req.FollowerID, req.FolloweeID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to unfollow user: %v", err)
 	}
@@ -360,7 +360,7 @@ func (s *AuthUserAdminService) GetFollowing(ctx context.Context, req *authUserAd
 		return nil, status.Errorf(codes.Internal, "failed to get following: %v", err)
 	}
 	return &authUserAdminService.GetFollowingResponse{
-		Data: profiles,
+		Users: profiles,
 	}, nil
 }
 
@@ -371,7 +371,7 @@ func (s *AuthUserAdminService) GetFollowers(ctx context.Context, req *authUserAd
 		return nil, status.Errorf(codes.Internal, "failed to get followers: %v", err)
 	}
 	return &authUserAdminService.GetFollowersResponse{
-		Data: profiles,
+		Users: profiles,
 	}, nil
 }
 
@@ -423,7 +423,7 @@ func (s *AuthUserAdminService) UpdateUserAdmin(ctx context.Context, req *authUse
 }
 
 // BlockUser sets a user as banned
-func (s *AuthUserAdminService) BlockUser(ctx context.Context, req *authUserAdminService.BlockUserRequest) (*authUserAdminService.BlockUserResponse, error) {
+func (s *AuthUserAdminService) BanUser(ctx context.Context, req *authUserAdminService.BanUserRequest) (*authUserAdminService.BanUserResponse, error) {
 	isAdmin, err := s.repo.IsAdmin(ctx, req.UserID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
@@ -432,17 +432,17 @@ func (s *AuthUserAdminService) BlockUser(ctx context.Context, req *authUserAdmin
 		return nil, status.Errorf(codes.PermissionDenied, "admin privileges required")
 	}
 
-	err = s.repo.BlockUser(ctx, req.UserID)
+	err = s.repo.BanUser(ctx, req.UserID, req.BanReason, req.BanExpiry, req.BanType)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to block user: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to ban user: %v", err)
 	}
-	return &authUserAdminService.BlockUserResponse{
-		Message: "User blocked successfully",
+	return &authUserAdminService.BanUserResponse{
+		Message: "User banned successfully",
 	}, nil
 }
 
 // UnblockUser removes a user's ban
-func (s *AuthUserAdminService) UnblockUser(ctx context.Context, req *authUserAdminService.UnblockUserAdminRequest) (*authUserAdminService.UnblockUserAdminResponse, error) {
+func (s *AuthUserAdminService) UnbanUser(ctx context.Context, req *authUserAdminService.UnbanUserRequest) (*authUserAdminService.UnbanUserResponse, error) {
 	isAdmin, err := s.repo.IsAdmin(ctx, req.UserID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
@@ -451,12 +451,12 @@ func (s *AuthUserAdminService) UnblockUser(ctx context.Context, req *authUserAdm
 		return nil, status.Errorf(codes.PermissionDenied, "admin privileges required")
 	}
 
-	err = s.repo.UnblockUser(ctx, req.UserID)
+	err = s.repo.UnbanUser(ctx, req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to unblock user: %v", err)
+		return nil, status.Errorf(codes.Internal, "failed to unban user: %v", err)
 	}
-	return &authUserAdminService.UnblockUserAdminResponse{
-		Message: "User unblocked successfully",
+	return &authUserAdminService.UnbanUserResponse{
+		Message: "User unbanned successfully",
 	}, nil
 }
 
@@ -530,3 +530,29 @@ func (s *AuthUserAdminService) GetAllUsers(ctx context.Context, req *authUserAdm
 		Message:    "Users retrieved successfully",
 	}, nil
 }
+
+
+func (s *AuthUserAdminService)BanHistory(ctx context.Context, req *authUserAdminService.BanHistoryRequest) (*authUserAdminService.BanHistoryResponse, error) {
+	
+	history, err := s.repo.GetBanHistory(ctx, req.UserID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to get ban history: %v", err)
+	}
+	return &authUserAdminService.BanHistoryResponse{
+		Bans: history,
+		Message: "Ban history retrieved successfully",
+	}, nil
+}
+
+func (s *AuthUserAdminService)SearchUsers(ctx context.Context, req *authUserAdminService.SearchUsersRequest) (*authUserAdminService.SearchUsersResponse, error) {
+	
+	users, err := s.repo.SearchUsers(ctx, req.Query)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to search users: %v", err)
+	}
+	return &authUserAdminService.SearchUsersResponse{
+		Users: users,
+		Message: "Users searched successfully",
+	}, nil
+}
+

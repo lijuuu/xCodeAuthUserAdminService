@@ -1,8 +1,6 @@
 package db
 
 import (
-	"time"
-
 	"gorm.io/gorm"
 )
 
@@ -21,50 +19,69 @@ type User struct {
 	MuteNotifications bool           `gorm:"default:false;not null" json:"mute_notifications"`
 	IsBanned          bool           `gorm:"default:false;not null;index" json:"is_banned"`
 	BanReason         string         `gorm:"type:text" json:"ban_reason"`
-	BanExpiration     *time.Time     `gorm:"type:timestamp" json:"ban_expiration"`
+	BanExpiration     *int64         `gorm:"type:bigint" json:"ban_expiration"`
 	IsVerified        bool           `gorm:"default:false;not null" json:"is_verified"`
 	Status            string         `gorm:"type:varchar(50);default:'active';not null;index:idx_role_status" json:"status"`
 	AvatarData        string         `gorm:"type:text" json:"avatar_data"`
 	Github            string         `gorm:"type:varchar(255)" json:"github"`
 	Twitter           string         `gorm:"type:varchar(255)" json:"twitter"`
 	Linkedin          string         `gorm:"type:varchar(255)" json:"linkedin"`
-	CreatedAt         time.Time      `gorm:"autoCreateTime;not null" json:"created_at"`
-	UpdatedAt         time.Time      `gorm:"autoUpdateTime;not null" json:"updated_at"`
+	CreatedAt         int64          `gorm:"autoCreateTime;not null" json:"created_at"`
+	UpdatedAt         int64          `gorm:"autoUpdateTime;not null" json:"updated_at"`
 	DeletedAt         gorm.DeletedAt `gorm:"index" json:"deleted_at"`
 	Following         []Following    `gorm:"foreignKey:FollowerID" json:"following"`
 	Followers         []Follower     `gorm:"foreignKey:FolloweeID" json:"followers"`
 }
 
 type Following struct {
-	FollowerID string    `gorm:"primaryKey;type:uuid;index" json:"follower_id"`
-	FolloweeID string    `gorm:"primaryKey;type:uuid;index" json:"followee_id"`
-	CreatedAt  time.Time `gorm:"autoCreateTime" json:"created_at"`
+	FollowerID string `gorm:"primaryKey;type:uuid;index" json:"follower_id"`
+	FolloweeID string `gorm:"primaryKey;type:uuid;index" json:"followee_id"`
+	CreatedAt  int64  `gorm:"autoCreateTime" json:"created_at"`
 }
 
 type Follower struct {
-	FollowerID string    `gorm:"primaryKey;type:uuid;index" json:"follower_id"`
-	FolloweeID string    `gorm:"primaryKey;type:uuid;index" json:"followee_id"`
-	CreatedAt  time.Time `gorm:"autoCreateTime" json:"created_at"`
+	FollowerID string `gorm:"primaryKey;type:uuid;index" json:"follower_id"`
+	FolloweeID string `gorm:"primaryKey;type:uuid;index" json:"followee_id"`
+	CreatedAt  int64  `gorm:"autoCreateTime" json:"created_at"`
 }
 
 // Verification represents the verification tokens (e.g., OTP) table
 type Verification struct {
-	ID        string    `gorm:"primaryKey;type:uuid;not null" json:"id"`
-	UserID    string    `gorm:"type:uuid;not null;index" json:"user_id"`
-	Email     string    `gorm:"type:varchar(255);not null;index" json:"email"`
-	Token     string    `gorm:"type:varchar(255);not null" json:"token"`
-	CreatedAt time.Time `gorm:"autoCreateTime;not null" json:"created_at"`
-	ExpiryAt  time.Time `gorm:"not null" json:"expiry_at"`
-	Used      bool      `gorm:"default:false;not null" json:"used"`
+	ID        string `gorm:"primaryKey;type:uuid;not null" json:"id"`
+	UserID    string `gorm:"type:uuid;not null;index" json:"user_id"`
+	Email     string `gorm:"type:varchar(255);not null;index" json:"email"`
+	Token     string `gorm:"type:varchar(255);not null" json:"token"`
+	CreatedAt int64  `gorm:"autoCreateTime;not null" json:"created_at"`
+	ExpiryAt  int64  `gorm:"not null" json:"expiry_at"`                
+	Used      bool   `gorm:"default:false;not null" json:"used"`
 }
 
 // ForgotPassword represents the password reset tokens table
 type ForgotPassword struct {
-	ID        string    `gorm:"primaryKey;type:uuid;not null" json:"id"`
-	UserID    string    `gorm:"type:uuid;not null;index" json:"user_id"`
-	Email     string    `gorm:"type:varchar(255);not null;index" json:"email"`
-	Token     string    `gorm:"type:varchar(255);not null" json:"token"`
-	CreatedAt time.Time `gorm:"autoCreateTime;not null" json:"created_at"`
-	ExpiryAt  time.Time `gorm:"not null" json:"expiry_at"`
-	Used      bool      `gorm:"default:false;not null" json:"used"`
+	ID        string `gorm:"primaryKey;type:uuid;not null" json:"id"`
+	UserID    string `gorm:"type:uuid;not null;index" json:"user_id"`
+	Email     string `gorm:"type:varchar(255);not null;index" json:"email"`
+	Token     string `gorm:"type:varchar(255);not null" json:"token"`
+	CreatedAt int64  `gorm:"autoCreateTime;not null" json:"created_at"`
+	ExpiryAt  int64  `gorm:"not null" json:"expiry_at"`                
+	Used      bool   `gorm:"default:false;not null" json:"used"`
+}
+
+type BanHistory struct {
+	ID        string `gorm:"primaryKey;type:uuid;not null" json:"id"`
+	UserID    string `gorm:"type:uuid;not null;index" json:"user_id"`
+	BanType   string `gorm:"type:varchar(50);not null" json:"ban_type"`
+	BannedAt  int64  `gorm:"type:bigint;not null" json:"banned_at"`   
+	BanReason string `gorm:"type:text;not null" json:"ban_reason"`
+	BanExpiry int64  `gorm:"type:bigint;not null" json:"ban_expiry"`   
+}
+
+type Admin struct {
+	ID        string `gorm:"primaryKey;type:uuid;not null" json:"id"`
+	Email     string `gorm:"type:varchar(255);not null;index" json:"email"`
+	FirstName string `gorm:"type:varchar(255);not null" json:"first_name"`
+	LastName  string `gorm:"type:varchar(255);not null" json:"last_name"`
+	AvatarURL string `gorm:"type:varchar(255)" json:"avatar_url"`
+	CreatedAt int64  `gorm:"autoCreateTime;not null" json:"created_at"`
+	UpdatedAt int64  `gorm:"autoUpdateTime;not null" json:"updated_at"`
 }

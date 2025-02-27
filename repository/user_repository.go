@@ -77,8 +77,8 @@ func (r *UserRepository) CreateUser(ctx context.Context, req *AuthUserAdminServi
 		UserID:    user.ID,
 		Email:     user.Email,
 		Token:     otp,
-		CreatedAt: time.Now(),
-		ExpiryAt:  time.Now().Add(30 * time.Minute), // OTP valid for 30 minutes
+		CreatedAt: time.Now().Unix(),
+		ExpiryAt:  time.Now().Add(30 * time.Minute).Unix(), // OTP valid for 30 minutes
 		Used:      false,
 	}
 	if err := r.db.WithContext(ctx).Create(&verification).Error; err != nil {
@@ -134,7 +134,7 @@ func (r *UserRepository) UpdateProfile(ctx context.Context, req *AuthUserAdminSe
 		Github:            req.Socials.Github,
 		Twitter:           req.Socials.Twitter,
 		Linkedin:          req.Socials.Linkedin,
-		UpdatedAt:         time.Now(),
+		UpdatedAt:         time.Now().Unix(),
 	}
 	if err := r.db.WithContext(ctx).Model(&user).Where("id = ? AND deleted_at IS NULL", req.UserID).Updates(user).Error; err != nil {
 		return status.Errorf(codes.Internal, "failed to update profile: %v", err)
@@ -146,7 +146,7 @@ func (r *UserRepository) UpdateProfileImage(ctx context.Context, req *AuthUserAd
 	if err := r.db.WithContext(ctx).Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", req.UserID).
 		Updates(map[string]interface{}{
 			"avatar_data": req.AvatarURL,
-			"updated_at":  time.Now(),
+			"updated_at":  time.Now().Unix(),
 		}).Error; err != nil {
 		return status.Errorf(codes.Internal, "failed to update profile image: %v", err)
 	}
@@ -163,15 +163,20 @@ func (r *UserRepository) GetUserProfile(ctx context.Context, userID string) (*Au
 	}
 
 	return &AuthUserAdminService.GetUserProfileResponse{
-		FirstName: user.FirstName,
-		LastName:  user.LastName,
-		Country:   user.Country,
-		Email:     user.Email,
-		Role:      user.Role,
-		Socials: &AuthUserAdminService.Socials{
-			Github:   user.Github,
-			Twitter:  user.Twitter,
-			Linkedin: user.Linkedin,
+		UserProfile: &AuthUserAdminService.UserProfile{
+			UserID:            user.ID,
+			FirstName:         user.FirstName,
+			LastName:          user.LastName,
+			Email:             user.Email,
+			Role:              user.Role,
+			Status:            user.Status,
+			Country:           user.Country,
+			PrimaryLanguageID: user.PrimaryLanguageID,
+			Socials: &AuthUserAdminService.Socials{
+				Github:   user.Github,
+				Twitter:  user.Twitter,
+				Linkedin: user.Linkedin,
+			},
 		},
 	}, nil
 }
@@ -191,7 +196,7 @@ func (r *UserRepository) CheckBanStatus(ctx context.Context, userID string) (*Au
 		Message:  "Ban status checked",
 	}
 	if user.BanExpiration != nil {
-		resp.BanExpiration = user.BanExpiration.Unix()
+		resp.BanExpiration = *user.BanExpiration
 	}
 	return resp, nil
 }
@@ -348,7 +353,7 @@ func (r *UserRepository) UpdateUserAdmin(ctx context.Context, req *AuthUserAdmin
 		Github:            req.Socials.Github,
 		Twitter:           req.Socials.Twitter,
 		Linkedin:          req.Socials.Linkedin,
-		UpdatedAt:         time.Now(),
+		UpdatedAt:         time.Now().Unix(),
 	}
 	if req.Password != "" {
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
@@ -364,28 +369,37 @@ func (r *UserRepository) UpdateUserAdmin(ctx context.Context, req *AuthUserAdmin
 	return nil
 }
 
-func (r *UserRepository) BlockUser(ctx context.Context, userID string) error {
+func (r *UserRepository) BanUser(ctx context.Context, userID string, banReason string, banExpiry int64,banType string) error {
 	if err := r.db.WithContext(ctx).Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).
 		Updates(map[string]interface{}{
 			"is_banned":      true,
-			"ban_reason":     "Blocked by admin",
-			"ban_expiration": time.Now().Add(365 * 24 * time.Hour),
-			"updated_at":     time.Now(),
 		}).Error; err != nil {
-		return status.Errorf(codes.Internal, "failed to block user: %v", err)
+		return status.Errorf(codes.Internal, "failed to ban user: %v", err)
 	}
+
+	// Record the ban in the BanHistory table
+	banHistory := db.BanHistory{
+		ID:        uuid.New().String(),
+		UserID:    userID,
+		BanType:   banType,
+		BannedAt:  time.Now().Unix(),
+		BanReason: banReason,
+		BanExpiry: banExpiry,
+	}
+
+	if err := r.db.WithContext(ctx).Create(&banHistory).Error; err != nil {
+		return status.Errorf(codes.Internal, "failed to record ban history: %v", err)
+	}
+
 	return nil
 }
 
-func (r *UserRepository) UnblockUser(ctx context.Context, userID string) error {
+func (r *UserRepository) UnbanUser(ctx context.Context, userID string) error {
 	if err := r.db.WithContext(ctx).Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).
 		Updates(map[string]interface{}{
 			"is_banned":      false,
-			"ban_reason":     nil,
-			"ban_expiration": nil,
-			"updated_at":     time.Now(),
 		}).Error; err != nil {
-		return status.Errorf(codes.Internal, "failed to unblock user: %v", err)
+		return status.Errorf(codes.Internal, "failed to unban user: %v", err)
 	}
 	return nil
 }
@@ -394,7 +408,7 @@ func (r *UserRepository) VerifyAdminUser(ctx context.Context, userID string) err
 	if err := r.db.WithContext(ctx).Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).
 		Updates(map[string]interface{}{
 			"is_verified": true,
-			"updated_at":  time.Now(),
+			"updated_at":  time.Now().Unix(),
 		}).Error; err != nil {
 		return status.Errorf(codes.Internal, "failed to verify user: %v", err)
 	}
@@ -405,7 +419,7 @@ func (r *UserRepository) UnverifyUser(ctx context.Context, userID string) error 
 	if err := r.db.WithContext(ctx).Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).
 		Updates(map[string]interface{}{
 			"is_verified": false,
-			"updated_at":  time.Now(),
+			"updated_at":  time.Now().Unix(),
 		}).Error; err != nil {
 		return status.Errorf(codes.Internal, "failed to unverify user: %v", err)
 	}
@@ -460,7 +474,7 @@ func (r *UserRepository) ChangePassword(ctx context.Context, userID, hashedPassw
 	if err := r.db.WithContext(ctx).Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).
 		Updates(map[string]interface{}{
 			"password":   hashedPassword,
-			"updated_at": time.Now(),
+			"updated_at": time.Now().Unix(),
 		}).Error; err != nil {
 		return status.Errorf(codes.Internal, "failed to update password: %v", err)
 	}
@@ -512,8 +526,8 @@ func (r *UserRepository) CreateVerification(ctx context.Context, userID, email, 
 		UserID:    userID,
 		Email:     email,
 		Token:     token,
-		CreatedAt: time.Now(),
-		ExpiryAt:  time.Now().Add(30 * time.Minute),
+		CreatedAt: time.Now().Unix(),
+		ExpiryAt:  time.Now().Add(30 * time.Minute).Unix(),
 		Used:      false,
 	}
 	if err := r.db.WithContext(ctx).Create(&verification).Error; err != nil {
@@ -549,10 +563,9 @@ func (r *UserRepository) ResendOTP(ctx context.Context, userID string) (string, 
 		return "", status.Errorf(codes.Internal, "failed to retrieve user: %v", err)
 	}
 
-	if err:= r.db.WithContext(ctx).Where("user_id = ? AND expiry_at > ? AND used = ?", userID, time.Now(), false).Delete(&db.Verification{}).Error; err != nil {
+	if err := r.db.WithContext(ctx).Where("user_id = ? AND expiry_at > ? AND used = ?", userID, time.Now(), false).Delete(&db.Verification{}).Error; err != nil {
 		return "", status.Errorf(codes.Internal, "failed to clear existing OTP: %v", err)
 	}
-
 
 	otp := GenerateOTP(6)
 	verification := db.Verification{
@@ -560,8 +573,8 @@ func (r *UserRepository) ResendOTP(ctx context.Context, userID string) (string, 
 		UserID:    userID,
 		Email:     user.Email,
 		Token:     otp,
-		CreatedAt: time.Now(),
-		ExpiryAt:  time.Now().Add(30 * time.Minute),
+		CreatedAt: time.Now().Unix(),
+		ExpiryAt:  time.Now().Add(30 * time.Minute).Unix(),
 		Used:      false,
 	}
 	if err := r.db.WithContext(ctx).Create(&verification).Error; err != nil {
@@ -595,8 +608,8 @@ func (r *UserRepository) CreateForgotPasswordToken(ctx context.Context, email, t
 		UserID:    user.ID,
 		Email:     user.Email,
 		Token:     token,
-		CreatedAt: time.Now(),
-		ExpiryAt:  time.Now().Add(1 * time.Hour),
+		CreatedAt: time.Now().Unix(),
+		ExpiryAt:  time.Now().Add(1 * time.Hour).Unix(),
 		Used:      false,
 	}
 	if err := r.db.WithContext(ctx).Create(&forgot).Error; err != nil {
@@ -710,3 +723,67 @@ func IsValidPassword(password string) bool {
 	}
 	return hasUpper && hasDigit
 }
+
+
+func (r *UserRepository) GetBanHistory(ctx context.Context, userID string) ([]*AuthUserAdminService.BanHistory, error) {
+	var bans []db.BanHistory
+	if err := r.db.WithContext(ctx).Where("user_id = ? AND deleted_at IS NULL", userID).Find(&bans).Error; err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to retrieve ban history: %v", err)
+	}
+
+	var history []*AuthUserAdminService.BanHistory
+	for _, ban := range bans {
+		history = append(history, &AuthUserAdminService.BanHistory{
+			Id: ban.ID,
+			UserID: ban.UserID,
+			BanType: ban.BanType,
+			BannedAt: ban.BannedAt, 
+			BanReason: ban.BanReason,
+			BanExpiry: ban.BanExpiry,
+		})
+	}
+
+// 	message BanHistory {
+//     string id = 1;
+//     string userID = 2;
+//     string bannedAt = 3;
+//     string banType = 4;
+//     string banReason = 5;
+//     string banExpiry = 6;
+//     int64 createdAt = 7;
+// }
+	return history, nil
+}
+
+func (r *UserRepository) SearchUsers(ctx context.Context, query string) ([]*AuthUserAdminService.UserProfile, error) {
+	var users []db.User
+	if err := r.db.WithContext(ctx).Where("deleted_at IS NULL").Find(&users).Error; err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to retrieve users: %v", err)
+	}
+
+	var profiles []*AuthUserAdminService.UserProfile
+	for _, u := range users {
+		profiles = append(profiles, &AuthUserAdminService.UserProfile{
+			UserID:            u.ID,
+			UserName:          "", // Assuming UserName is not available in db.User
+			FirstName:         u.FirstName,
+			LastName:          u.LastName,
+			AvatarURL:         u.AvatarData,
+			Email:             u.Email,
+			Role:              u.Role,
+			Status:            u.Status,
+			Country:           u.Country,
+			IsBanned:          u.IsBanned,
+			PrimaryLanguageID: u.PrimaryLanguageID,
+			MuteNotifications: u.MuteNotifications,
+			Socials: &AuthUserAdminService.Socials{
+				Github:   u.Github,
+				Twitter:  u.Twitter,
+				Linkedin: u.Linkedin,
+			},
+			CreatedAt:         u.CreatedAt,
+		})
+	}
+	return profiles, nil
+}
+
