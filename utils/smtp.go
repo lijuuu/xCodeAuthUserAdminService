@@ -37,8 +37,10 @@ func SendOTPEmail(to, role, otp string, expiryTime uint64) error {
 	auth := smtp.PlainAuth("", config.From, config.AppPassword, config.Host)
 
 	// Construct the verification URL with OTP embedded
-	appURL := strings.TrimSuffix(configs.LoadConfig().APPURL, "/")
-	verificationURL := fmt.Sprintf("%s/api/v1/auth/verify?email=%s&token=%s", appURL, to, otp)
+	frontendURL := strings.TrimSuffix(configs.LoadConfig().FRONTENDURL, "/")
+	verificationURL := fmt.Sprintf("%s/verify-email?email=%s&token=%s", frontendURL, to, otp)
+
+	fmt.Println("verificationURL", verificationURL)
 
 	// HTML email content
 	htmlContent := fmt.Sprintf(`

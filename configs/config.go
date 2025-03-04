@@ -14,6 +14,7 @@ type Config struct {
 	PostgresDSN  string
 	JWTSecretKey string
 	APPURL       string
+	FRONTENDURL string
 	SMTPAppKey   string // New field for SMTP app key
 	SMTPHost     string // SMTP host (e.g., smtp.gmail.com)
 	SMTPPort     string // SMTP port (e.g., "587" for TLS)
@@ -32,11 +33,12 @@ func LoadConfig() Config {
 		UserGRPCPort: getEnv("USERGRPCPORT", "50051"),
 		PostgresDSN:  getEnv("POSTGRESDSN", "host=localhost port=5432 user=admin password=password dbname=xcodedev sslmode=disable"),
 		JWTSecretKey: getEnv("JWTSECRETKEY", "secretLeetcode"),
-		APPURL:       getEnv("APPURL", "http://localhost:7000"),
-		SMTPAppKey:   getEnv("SMTPAPPKEY", ""),
-		SMTPHost:     getEnv("SMTPHOST", "smtp.gmail.com"),
-		SMTPPort:     getEnv("SMTPPORT", "587"),
-		SMTPUser:     getEnv("SMTPUSER", "xcodedev@gmail.com"),
+		APPURL:        getEnv("APPURL", "http://localhost:7000"),
+		FRONTENDURL:   getEnv("FRONTENDURL", "http://localhost:5173"),
+		SMTPAppKey:    getEnv("SMTPAPPKEY", ""),
+		SMTPHost:      getEnv("SMTPHOST", "smtp.gmail.com"),
+		SMTPPort:      getEnv("SMTPPORT", "587"),
+		SMTPUser:      getEnv("SMTPUSER", "xcodedev@gmail.com"),
 		AdminPassword: getEnv("ADMINPASSWORD", "admin"),
 		AdminUsername: getEnv("ADMINUSERNAME", "admin"),
 	}

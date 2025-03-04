@@ -37,110 +37,116 @@ func NewAuthUserAdminService(repo *repository.UserRepository, config *configs.Co
 	}
 }
 
-// extractUserIDFromContext extracts the user ID from the gRPC context (e.g., from JWT metadata)
-// func (s *AuthUserAdminService) extractUserIDFromContext(ctx context.Context) (string, error) {
-// 	md, ok := metadata.FromIncomingContext(ctx)
-// 	if !ok || len(md["userID"]) == 0 {
-// 		return "", status.Errorf(codes.Unauthenticated, "authorization token missing")
-// 	}
-
-// 	return md["userID"][0], nil
-// }
-
 // RegisterUser handles user registration and sends verification OTP
 func (s *AuthUserAdminService) RegisterUser(ctx context.Context, req *authUserAdminService.RegisterUserRequest) (*authUserAdminService.RegisterUserResponse, error) {
 	if req.Password != req.ConfirmPassword {
-		return nil, status.Errorf(codes.InvalidArgument, "passwords do not match")
+		return nil, status.Error(codes.InvalidArgument, "The passwords entered do not match. Please try again.")
 	}
 	if !repository.IsValidEmail(req.Email) {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid email format")
+		return nil, status.Error(codes.InvalidArgument, "Please provide a valid email address.")
 	}
 	if !repository.IsValidPassword(req.Password) {
-		return nil, status.Errorf(codes.InvalidArgument, "password must be at least 8 characters, include an uppercase letter, and a digit")
+		return nil, status.Error(codes.InvalidArgument, "Password must be at least 8 characters and include an uppercase letter and a number.")
 	}
 
-	userID, err := s.repo.CreateUser(ctx, req)
+	userID, err := s.repo.CreateUser(req)
 	if err != nil {
 		log.Printf("Error creating user: %v", err)
-		return nil, status.Errorf(codes.Internal, "failed to register user: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while creating your account. Please try again later.")
 	}
 
 	return &authUserAdminService.RegisterUserResponse{
-		UserID:  userID,
-		Message: "User registered successfully. Please verify your email with the OTP sent.",
+		UserID: userID,
+		UserProfile: &authUserAdminService.UserProfile{
+			UserID:    userID,
+			FirstName: req.FirstName,
+			LastName:  req.LastName,
+			Email:     req.Email,
+			Country:   req.Country,
+		},
+		Message: "Your account has been created successfully. Please check your email for the verification code.",
 	}, nil
 }
 
 // LoginUser handles user login with JWT generation
 func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdminService.LoginUserRequest) (*authUserAdminService.LoginUserResponse, error) {
-	userID, _, role, isVerified, err := s.repo.GetUserByEmail(ctx, req.Email)
+	user, err := s.repo.GetUserByEmail(req.Email)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to retrieve user: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while verifying your credentials. Please try again.")
 	}
-	if userID == "" {
-		return nil, status.Errorf(codes.NotFound, "user not found")
+	if user.ID == "" {
+		return nil, status.Error(codes.NotFound, "No account exists with this email address. Please verify or register.")
 	}
 
-	// if err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(req.Password)); err != nil {
-	// 	return nil, status.Errorf(codes.Unauthenticated, "invalid credentials: %v", err)
-	// }
-
-	valid, err := s.repo.CheckUserPassword(ctx, userID, req.Password)
+	valid, err := s.repo.CheckUserPassword(user.ID, req.Password)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to check user password: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while verifying your password. Please try again.")
 	}
 	if !valid {
-		return nil, status.Errorf(codes.Unauthenticated, "invalid credentials")
+		return nil, status.Error(codes.InvalidArgument, "The password provided is incorrect. Please try again.")
 	}
 
-	if !isVerified {
-		return nil, status.Errorf(codes.Unauthenticated, "user not verified")
+	if !user.IsVerified {
+		return nil, status.Error(codes.Unauthenticated, "Your email address requires verification. Please check your inbox.")
 	}
 
-	token, expiresIn, err := utils.GenerateJWT(userID, role, s.jwtSecret, 30*24*time.Hour)
+	rtoken, _, err := utils.GenerateJWT(user.ID, "USER", s.jwtSecret, 30*24*time.Hour)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to generate token: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while generating your login token. Please try again.")
+	}
+
+	atoken, expiresIn, err := utils.GenerateJWT(user.ID, "USER", s.jwtSecret, 7*24*time.Hour)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "An error occurred while generating your login token. Please try again.")
 	}
 
 	return &authUserAdminService.LoginUserResponse{
-		RefreshToken: token,
+		UserProfile: &authUserAdminService.UserProfile{
+			UserID:    user.ID,
+			FirstName: user.FirstName,
+			LastName:  user.LastName,
+			Email:     user.Email,
+			Country:   user.Country,
+		},
+		RefreshToken: rtoken,
+		AccessToken:  atoken,
 		ExpiresIn:    expiresIn,
-		UserID:       userID,
-		Message:      "Login successful",
+		UserID:       user.ID,
+		Message:      "Login successful. Welcome back.",
 	}, nil
 }
 
 // LoginAdmin handles admin login with JWT generation
 func (s *AuthUserAdminService) LoginAdmin(ctx context.Context, req *authUserAdminService.LoginAdminRequest) (*authUserAdminService.LoginAdminResponse, error) {
-	userID, hashedPassword, role, isVerified, err := s.repo.GetUserByEmail(ctx, req.Email)
+	user, err := s.repo.GetUserByEmail(req.Email)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to retrieve user: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while verifying your admin credentials. Please try again.")
 	}
-	if userID == "" {
-		return nil, status.Errorf(codes.NotFound, "admin not found")
+	if user.ID == "" {
+		return nil, status.Error(codes.NotFound, "No admin account exists with this email address.")
 	}
-	if role != "ADMIN" {
-		return nil, status.Errorf(codes.Unauthenticated, "not an admin user")
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(hashedPassword), []byte(req.Password)); err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, "invalid credentials: %v", err)
+	if user.Role != "ADMIN" {
+		return nil, status.Error(codes.PermissionDenied, "This account does not have administrative privileges.")
 	}
 
-	if !isVerified {
-		return nil, status.Errorf(codes.Unauthenticated, "admin not verified")
+	if err := bcrypt.CompareHashAndPassword([]byte(user.HashedPassword), []byte(req.Password)); err != nil {
+		return nil, status.Error(codes.Unauthenticated, "The admin password provided is incorrect. Please try again.")
 	}
 
-	token, expiresIn, err := utils.GenerateJWT(userID, role, s.jwtSecret, 30*24*time.Hour)
+	if !user.IsVerified {
+		return nil, status.Error(codes.Unauthenticated, "This admin account requires verification. Please contact support.")
+	}
+
+	rtoken, expiresIn, err := utils.GenerateJWT(user.ID, "ADMIN", s.jwtSecret, 30*24*time.Hour)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to generate token: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while generating your admin token. Please try again.")
 	}
 
 	return &authUserAdminService.LoginAdminResponse{
-		RefreshToken: token,
+		RefreshToken: rtoken,
 		ExpiresIn:    expiresIn,
-		AdminID:      userID,
-		Message:      "Admin login successful",
+		AdminID:      user.ID,
+		Message:      "Admin login successful. Welcome back.",
 	}, nil
 }
 
@@ -151,12 +157,12 @@ func (s *AuthUserAdminService) TokenRefresh(ctx context.Context, req *authUserAd
 		return []byte(s.jwtSecret), nil
 	})
 	if err != nil || !token.Valid {
-		return nil, status.Errorf(codes.Unauthenticated, "invalid refresh token: %v", err)
+		return nil, status.Error(codes.Unauthenticated, "Your session has expired. Please log in again.")
 	}
 
 	newToken, expiresIn, err := utils.GenerateJWT(claims.ID, claims.Role, s.jwtSecret, 7*24*time.Hour)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to generate token: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while refreshing your session. Please log in again.")
 	}
 
 	return &authUserAdminService.TokenRefreshResponse{
@@ -169,150 +175,147 @@ func (s *AuthUserAdminService) TokenRefresh(ctx context.Context, req *authUserAd
 // LogoutUser handles user logout (placeholder, as JWT is stateless)
 func (s *AuthUserAdminService) LogoutUser(ctx context.Context, req *authUserAdminService.LogoutRequest) (*authUserAdminService.LogoutResponse, error) {
 	return &authUserAdminService.LogoutResponse{
-		Message: "User logged out successfully",
+		Message: "You have been logged out successfully.",
 	}, nil
 }
 
 // ResendOTP resends a verification OTP
-func (s *AuthUserAdminService) ResendOTP(ctx context.Context, req *authUserAdminService.ResendOTPRequest) (*authUserAdminService.ResendOTPResponse, error) {
-	_, err := s.repo.ResendOTP(ctx, req.UserID)
+func (s *AuthUserAdminService) ResendEmailVerification(ctx context.Context, req *authUserAdminService.ResendEmailVerificationRequest) (*authUserAdminService.ResendEmailVerificationResponse, error) {
+	_, err := s.repo.ResendEmailVerification(req.Email)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to resend OTP: %v", err)
+
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	return &authUserAdminService.ResendOTPResponse{
-		Message: "OTP resent successfully",
+	return &authUserAdminService.ResendEmailVerificationResponse{
+		Message: "A new verification email has been sent to your email address.",
 	}, nil
 }
 
 // VerifyUser verifies a user with an OTP
 func (s *AuthUserAdminService) VerifyUser(ctx context.Context, req *authUserAdminService.VerifyUserRequest) (*authUserAdminService.VerifyUserResponse, error) {
-	verified, err := s.repo.VerifyUserToken(ctx, req.Email, req.Token)
+	verified, err := s.repo.VerifyUserToken(req.Email, req.Token)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to verify user: %v", err)
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 	if !verified {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid or expired verification token")
+		return nil, status.Error(codes.InvalidArgument, "The verification code is invalid or has expired. Please request a new one.")
 	}
 	return &authUserAdminService.VerifyUserResponse{
-		Message: "User verified successfully",
+		Message: "Your account has been successfully verified. You may now log in.",
 	}, nil
 }
 
 // SetTwoFactorAuth enables/disables 2FA
 func (s *AuthUserAdminService) ToggleTwoFactorAuth(ctx context.Context, req *authUserAdminService.ToggleTwoFactorAuthRequest) (*authUserAdminService.ToggleTwoFactorAuthResponse, error) {
-
-	// Check if user exists
-	_, err := s.repo.GetUserProfile(ctx, req.UserID)
+	_, err := s.repo.GetUserProfile(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "user not found: %v", err)
+		return nil, status.Error(codes.NotFound, "Your account could not be found. Please log in again.")
 	}
 
-	// if err := bcrypt.CompareHashAndPassword([]byte(usr.), []byte(req.Password)); err != nil {
-	// 	return nil, status.Errorf(codes.Unauthenticated, "invalid credentials: %v", err)
-	// }
-
-	valid, err := s.repo.CheckUserPassword(ctx, req.UserID, req.Password)
+	valid, err := s.repo.CheckUserPassword(req.UserID, req.Password)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to check user password: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while verifying your password. Please try again.")
 	}
 	if !valid {
-		return nil, status.Errorf(codes.Unauthenticated, "invalid credentials")
+		return nil, status.Error(codes.Unauthenticated, "The password provided is incorrect. Please try again.")
 	}
 
-	err = s.repo.Update2FAStatus(ctx, req.UserID, req.TwoFactorAuth)
+	err = s.repo.Update2FAStatus(req.UserID, req.TwoFactorAuth)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to update 2FA status: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while updating two-factor authentication. Please try again.")
 	}
 
+	status := "enabled"
+	if !req.TwoFactorAuth {
+		status = "disabled"
+	}
 	return &authUserAdminService.ToggleTwoFactorAuthResponse{
-		Message: fmt.Sprintf("2FA has been %s successfully", map[bool]string{true: "enabled", false: "disabled"}[req.TwoFactorAuth]),
+		Message: fmt.Sprintf("Two-factor authentication has been %s for your account.", status),
 	}, nil
 }
 
 // ForgotPassword initiates password recovery
 func (s *AuthUserAdminService) ForgotPassword(ctx context.Context, req *authUserAdminService.ForgotPasswordRequest) (*authUserAdminService.ForgotPasswordResponse, error) {
 	if !repository.IsValidEmail(req.Email) {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid email format")
+		return nil, status.Error(codes.InvalidArgument, "Please provide a valid email address.")
 	}
 
-	// Generate a unique token
 	token := uuid.New().String()
-	_, err := s.repo.CreateForgotPasswordToken(ctx, req.Email, token)
+	_, err := s.repo.CreateForgotPasswordToken(req.Email, token)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to initiate password recovery: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while initiating password recovery. Please try again.")
 	}
 
 	return &authUserAdminService.ForgotPasswordResponse{
-		Message: "Password recovery initiated. Check your email for reset instructions.",
-		Token:   token, // Return the token for the reset link
+		Message: "Password recovery instructions have been sent to your email.",
+		Token:   token,
 	}, nil
 }
 
 // FinishForgotPassword completes the password reset process
 func (s *AuthUserAdminService) FinishForgotPassword(ctx context.Context, req *authUserAdminService.FinishForgotPasswordRequest) (*authUserAdminService.FinishForgotPasswordResponse, error) {
 	if req.NewPassword != req.ConfirmPassword {
-		return nil, status.Errorf(codes.InvalidArgument, "passwords do not match")
+		return nil, status.Error(codes.InvalidArgument, "The new passwords do not match. Please try again.")
 	}
 	if !repository.IsValidPassword(req.NewPassword) {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid password format: must be at least 8 characters, include an uppercase letter, and a digit")
+		return nil, status.Error(codes.InvalidArgument, "Password must be at least 8 characters and include an uppercase letter and a number.")
 	}
 
-	err := s.repo.FinishForgotPassword(ctx, req.UserID, req.Token, req.NewPassword)
+	err := s.repo.FinishForgotPassword(req.UserID, req.Token, req.NewPassword)
 	if err != nil {
 		return nil, err
 	}
 
 	return &authUserAdminService.FinishForgotPasswordResponse{
-		Message: "Password reset successfully",
+		Message: "Your password has been reset successfully.",
 	}, nil
 }
 
 // ChangePassword allows authenticated users to change their password
 func (s *AuthUserAdminService) ChangePassword(ctx context.Context, req *authUserAdminService.ChangePasswordRequest) (*authUserAdminService.ChangePasswordResponse, error) {
 	if req.NewPassword != req.ConfirmPassword {
-		return nil, status.Errorf(codes.InvalidArgument, "passwords do not match")
+		return nil, status.Error(codes.InvalidArgument, "The new passwords do not match. Please try again.")
 	}
 	if !repository.IsValidPassword(req.NewPassword) {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid password format: must be at least 8 characters, include an uppercase letter, and a digit")
+		return nil, status.Error(codes.InvalidArgument, "Password must be at least 8 characters and include an uppercase letter and a number.")
 	}
 
-	err := s.repo.ChangeAuthenticatedPassword(ctx, req.UserID, req.OldPassword, req.NewPassword)
+	err := s.repo.ChangeAuthenticatedPassword(req.UserID, req.OldPassword, req.NewPassword)
 	if err != nil {
 		return nil, err
 	}
 
 	return &authUserAdminService.ChangePasswordResponse{
-		Message: "Password changed successfully",
+		Message: "Your password has been updated successfully.",
 	}, nil
 }
 
 // UpdateProfile updates user profile
 func (s *AuthUserAdminService) UpdateProfile(ctx context.Context, req *authUserAdminService.UpdateProfileRequest) (*authUserAdminService.UpdateProfileResponse, error) {
-
-	err := s.repo.UpdateProfile(ctx, req)
+	err := s.repo.UpdateProfile(req)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to update profile: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while updating your profile. Please try again.")
 	}
 	return &authUserAdminService.UpdateProfileResponse{
-		Message: "Profile updated successfully",
+		Message: "Your profile has been updated successfully.",
 	}, nil
 }
 
 // UpdateProfileImage updates the user's profile image
 func (s *AuthUserAdminService) UpdateProfileImage(ctx context.Context, req *authUserAdminService.UpdateProfileImageRequest) (*authUserAdminService.UpdateProfileImageResponse, error) {
-	err := s.repo.UpdateProfileImage(ctx, req)
+	err := s.repo.UpdateProfileImage(req)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to update profile image: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while updating your profile image. Please try again.")
 	}
 	return &authUserAdminService.UpdateProfileImageResponse{
-		Message:   "Profile image updated successfully",
+		Message:   "Your profile image has been updated successfully.",
 		AvatarURL: req.AvatarURL,
 	}, nil
 }
 
 // GetUserProfile retrieves a user's profile
 func (s *AuthUserAdminService) GetUserProfile(ctx context.Context, req *authUserAdminService.GetUserProfileRequest) (*authUserAdminService.GetUserProfileResponse, error) {
-	resp, err := s.repo.GetUserProfile(ctx, req.UserID)
+	resp, err := s.repo.GetUserProfile(req.UserID)
 	if err != nil {
 		return nil, err
 	}
@@ -321,43 +324,43 @@ func (s *AuthUserAdminService) GetUserProfile(ctx context.Context, req *authUser
 
 // CheckBanStatus checks if a user is banned
 func (s *AuthUserAdminService) CheckBanStatus(ctx context.Context, req *authUserAdminService.CheckBanStatusRequest) (*authUserAdminService.CheckBanStatusResponse, error) {
-	resp, err := s.repo.CheckBanStatus(ctx, req.UserID)
+	resp, err := s.repo.CheckBanStatus(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to check ban status: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while checking ban status. Please try again.")
 	}
 	if resp == nil {
-		return nil, status.Errorf(codes.NotFound, "user not found")
+		return nil, status.Error(codes.NotFound, "The specified user could not be found.")
 	}
 	return resp, nil
 }
 
 // FollowUser adds a follow relationship
 func (s *AuthUserAdminService) FollowUser(ctx context.Context, req *authUserAdminService.FollowUserRequest) (*authUserAdminService.FollowUserResponse, error) {
-	err := s.repo.FollowUser(ctx, req.FollowerID, req.FolloweeID)
+	err := s.repo.FollowUser(req.FollowerID, req.FolloweeID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to follow user: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while following the user. Please try again.")
 	}
 	return &authUserAdminService.FollowUserResponse{
-		Message: "User followed successfully",
+		Message: "You are now following this user.",
 	}, nil
 }
 
 // UnfollowUser removes a follow relationship
 func (s *AuthUserAdminService) UnfollowUser(ctx context.Context, req *authUserAdminService.UnfollowUserRequest) (*authUserAdminService.UnfollowUserResponse, error) {
-	err := s.repo.UnfollowUser(ctx, req.FollowerID, req.FolloweeID)
+	err := s.repo.UnfollowUser(req.FollowerID, req.FolloweeID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to unfollow user: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while unfollowing the user. Please try again.")
 	}
 	return &authUserAdminService.UnfollowUserResponse{
-		Message: "User unfollowed successfully",
+		Message: "You have unfollowed this user.",
 	}, nil
 }
 
 // GetFollowing retrieves users a given user is following
 func (s *AuthUserAdminService) GetFollowing(ctx context.Context, req *authUserAdminService.GetFollowingRequest) (*authUserAdminService.GetFollowingResponse, error) {
-	profiles, err := s.repo.GetFollowing(ctx, req.UserID)
+	profiles, err := s.repo.GetFollowing(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to get following: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while retrieving followed users. Please try again.")
 	}
 	return &authUserAdminService.GetFollowingResponse{
 		Users: profiles,
@@ -366,9 +369,9 @@ func (s *AuthUserAdminService) GetFollowing(ctx context.Context, req *authUserAd
 
 // GetFollowers retrieves users following a given user
 func (s *AuthUserAdminService) GetFollowers(ctx context.Context, req *authUserAdminService.GetFollowersRequest) (*authUserAdminService.GetFollowersResponse, error) {
-	profiles, err := s.repo.GetFollowers(ctx, req.UserID)
+	profiles, err := s.repo.GetFollowers(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to get followers: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while retrieving followers. Please try again.")
 	}
 	return &authUserAdminService.GetFollowersResponse{
 		Users: profiles,
@@ -378,181 +381,176 @@ func (s *AuthUserAdminService) GetFollowers(ctx context.Context, req *authUserAd
 // CreateUserAdmin creates a new admin user
 func (s *AuthUserAdminService) CreateUserAdmin(ctx context.Context, req *authUserAdminService.CreateUserAdminRequest) (*authUserAdminService.CreateUserAdminResponse, error) {
 	if req.Password != req.ConfirmPassword {
-		return nil, status.Errorf(codes.InvalidArgument, "passwords do not match")
+		return nil, status.Error(codes.InvalidArgument, "The passwords entered do not match. Please try again.")
 	}
 	if !repository.IsValidEmail(req.Email) {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid email format")
+		return nil, status.Error(codes.InvalidArgument, "Please provide a valid email address.")
 	}
 	if !repository.IsValidPassword(req.Password) {
-		return nil, status.Errorf(codes.InvalidArgument, "password must be at least 8 characters, include an uppercase letter, and a digit")
+		return nil, status.Error(codes.InvalidArgument, "Password must be at least 8 characters and include an uppercase letter and a number.")
 	}
 
-	userID, err := s.repo.CreateUserAdmin(ctx, req)
+	userID, err := s.repo.CreateUserAdmin(req)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to create admin user: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while creating the admin account. Please try again.")
 	}
 	return &authUserAdminService.CreateUserAdminResponse{
 		UserID:  userID,
-		Message: "Admin user created successfully",
+		Message: "The admin account has been created successfully.",
 	}, nil
 }
 
 // UpdateUserAdmin updates an admin user
 func (s *AuthUserAdminService) UpdateUserAdmin(ctx context.Context, req *authUserAdminService.UpdateUserAdminRequest) (*authUserAdminService.UpdateUserAdminResponse, error) {
-	isAdmin, err := s.repo.IsAdmin(ctx, req.UserID)
+	isAdmin, err := s.repo.IsAdmin(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while verifying admin status. Please try again.")
 	}
 	if !isAdmin {
-		return nil, status.Errorf(codes.PermissionDenied, "admin privileges required")
+		return nil, status.Error(codes.PermissionDenied, "Administrative privileges are required to perform this action.")
 	}
 
 	if req.Password != "" {
 		if !repository.IsValidPassword(req.Password) {
-			return nil, status.Errorf(codes.InvalidArgument, "invalid password format: must be at least 8 characters, include an uppercase letter, and a digit")
+			return nil, status.Error(codes.InvalidArgument, "Password must be at least 8 characters and include an uppercase letter and a number.")
 		}
 	}
 
-	err = s.repo.UpdateUserAdmin(ctx, req)
+	err = s.repo.UpdateUserAdmin(req)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to update admin user: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while updating the admin account. Please try again.")
 	}
 	return &authUserAdminService.UpdateUserAdminResponse{
-		Message: "Admin user updated successfully",
+		Message: "The admin account has been updated successfully.",
 	}, nil
 }
 
 // BlockUser sets a user as banned
 func (s *AuthUserAdminService) BanUser(ctx context.Context, req *authUserAdminService.BanUserRequest) (*authUserAdminService.BanUserResponse, error) {
-	isAdmin, err := s.repo.IsAdmin(ctx, req.UserID)
+	isAdmin, err := s.repo.IsAdmin(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while verifying admin privileges. Please try again.")
 	}
 	if !isAdmin {
-		return nil, status.Errorf(codes.PermissionDenied, "admin privileges required")
+		return nil, status.Error(codes.PermissionDenied, "Administrative privileges are required to ban a user.")
 	}
 
-	err = s.repo.BanUser(ctx, req.UserID, req.BanReason, req.BanExpiry, req.BanType)
+	err = s.repo.BanUser(req.UserID, req.BanReason, req.BanExpiry, req.BanType)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to ban user: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while banning the user. Please try again.")
 	}
 	return &authUserAdminService.BanUserResponse{
-		Message: "User banned successfully",
+		Message: "The user has been banned successfully.",
 	}, nil
 }
 
 // UnblockUser removes a user's ban
 func (s *AuthUserAdminService) UnbanUser(ctx context.Context, req *authUserAdminService.UnbanUserRequest) (*authUserAdminService.UnbanUserResponse, error) {
-	isAdmin, err := s.repo.IsAdmin(ctx, req.UserID)
+	isAdmin, err := s.repo.IsAdmin(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while verifying admin status. Please try again.")
 	}
 	if !isAdmin {
-		return nil, status.Errorf(codes.PermissionDenied, "admin privileges required")
+		return nil, status.Error(codes.PermissionDenied, "Administrative privileges are required to unban a user.")
 	}
 
-	err = s.repo.UnbanUser(ctx, req.UserID)
+	err = s.repo.UnbanUser(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to unban user: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while unbanning the user. Please try again.")
 	}
 	return &authUserAdminService.UnbanUserResponse{
-		Message: "User unbanned successfully",
+		Message: "The user has been unbanned successfully.",
 	}, nil
 }
 
 // VerifyAdminUser verifies a user (admin action)
 func (s *AuthUserAdminService) VerifyAdminUser(ctx context.Context, req *authUserAdminService.VerifyAdminUserRequest) (*authUserAdminService.VerifyAdminUserResponse, error) {
-	isAdmin, err := s.repo.IsAdmin(ctx, req.UserID)
+	isAdmin, err := s.repo.IsAdmin(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while verifying admin status. Please try again.")
 	}
 	if !isAdmin {
-		return nil, status.Errorf(codes.PermissionDenied, "admin privileges required")
+		return nil, status.Error(codes.PermissionDenied, "Administrative privileges are required to verify a user.")
 	}
 
-	err = s.repo.VerifyAdminUser(ctx, req.UserID)
+	err = s.repo.VerifyAdminUser(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to verify user: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while verifying the user. Please try again.")
 	}
 	return &authUserAdminService.VerifyAdminUserResponse{
-		Message: "User verified successfully",
+		Message: "The user has been verified successfully.",
 	}, nil
 }
 
 // UnverifyUser un-verifies a user (admin action)
 func (s *AuthUserAdminService) UnverifyUser(ctx context.Context, req *authUserAdminService.UnverifyUserAdminRequest) (*authUserAdminService.UnverifyUserAdminResponse, error) {
-	isAdmin, err := s.repo.IsAdmin(ctx, req.UserID)
+	isAdmin, err := s.repo.IsAdmin(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while verifying admin status. Please try again.")
 	}
 	if !isAdmin {
-		return nil, status.Errorf(codes.PermissionDenied, "admin privileges required")
+		return nil, status.Error(codes.PermissionDenied, "Administrative privileges are required to unverify a user.")
 	}
 
-	err = s.repo.UnverifyUser(ctx, req.UserID)
+	err = s.repo.UnverifyUser(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to unverify user: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while unverifying the user. Please try again.")
 	}
 	return &authUserAdminService.UnverifyUserAdminResponse{
-		Message: "User unverified successfully",
+		Message: "The user’s verification has been removed successfully.",
 	}, nil
 }
 
 // SoftDeleteUserAdmin soft deletes a user
 func (s *AuthUserAdminService) SoftDeleteUserAdmin(ctx context.Context, req *authUserAdminService.SoftDeleteUserAdminRequest) (*authUserAdminService.SoftDeleteUserAdminResponse, error) {
-	isAdmin, err := s.repo.IsAdmin(ctx, req.UserID)
+	isAdmin, err := s.repo.IsAdmin(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to check admin status: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while verifying admin status. Please try again.")
 	}
 	if !isAdmin {
-		return nil, status.Errorf(codes.PermissionDenied, "admin privileges required")
+		return nil, status.Error(codes.PermissionDenied, "Administrative privileges are required to delete a user.")
 	}
 
-	err = s.repo.SoftDeleteUserAdmin(ctx, req.UserID)
+	err = s.repo.SoftDeleteUserAdmin(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to soft delete user: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while deleting the user. Please try again.")
 	}
 	return &authUserAdminService.SoftDeleteUserAdminResponse{
-		Message: "User soft deleted successfully",
+		Message: "The user has been soft-deleted successfully.",
 	}, nil
 }
 
 // GetAllUsers retrieves a paginated list of users
 func (s *AuthUserAdminService) GetAllUsers(ctx context.Context, req *authUserAdminService.GetAllUsersRequest) (*authUserAdminService.GetAllUsersResponse, error) {
-
-	profiles, totalCount, err := s.repo.GetAllUsers(ctx, req)
+	profiles, totalCount, err := s.repo.GetAllUsers(req)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to get users: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while retrieving users. Please try again.")
 	}
 	return &authUserAdminService.GetAllUsersResponse{
 		Users:      profiles,
 		TotalCount: totalCount,
-		Message:    "Users retrieved successfully",
+		Message:    "User list retrieved successfully.",
 	}, nil
 }
 
-
-func (s *AuthUserAdminService)BanHistory(ctx context.Context, req *authUserAdminService.BanHistoryRequest) (*authUserAdminService.BanHistoryResponse, error) {
-	
-	history, err := s.repo.GetBanHistory(ctx, req.UserID)
+func (s *AuthUserAdminService) BanHistory(ctx context.Context, req *authUserAdminService.BanHistoryRequest) (*authUserAdminService.BanHistoryResponse, error) {
+	history, err := s.repo.GetBanHistory(req.UserID)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to get ban history: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while retrieving ban history. Please try again.")
 	}
 	return &authUserAdminService.BanHistoryResponse{
-		Bans: history,
-		Message: "Ban history retrieved successfully",
+		Bans:    history,
+		Message: "Ban history retrieved successfully.",
 	}, nil
 }
 
-func (s *AuthUserAdminService)SearchUsers(ctx context.Context, req *authUserAdminService.SearchUsersRequest) (*authUserAdminService.SearchUsersResponse, error) {
-	
-	users, err := s.repo.SearchUsers(ctx, req.Query)
+func (s *AuthUserAdminService) SearchUsers(ctx context.Context, req *authUserAdminService.SearchUsersRequest) (*authUserAdminService.SearchUsersResponse, error) {
+	users, err := s.repo.SearchUsers(req.Query)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to search users: %v", err)
+		return nil, status.Error(codes.Internal, "An error occurred while searching for users. Please try again.")
 	}
 	return &authUserAdminService.SearchUsersResponse{
-		Users: users,
-		Message: "Users searched successfully",
+		Users:   users,
+		Message: "User search completed successfully.",
 	}, nil
 }
-
