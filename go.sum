@@ -49,6 +49,12 @@ github.com/lijuuu/GlobalProtoXcode v0.0.0-20250304105438-89fdce96a83f h1:b87NxCf
 github.com/lijuuu/GlobalProtoXcode v0.0.0-20250304105438-89fdce96a83f/go.mod h1:LtB4zCv4uCT722mZkbuKBzZAoyLkeKgDDXEE5nr2cLk=
 github.com/lijuuu/GlobalProtoXcode v0.0.0-20250304124659-612de4d8ccdf h1:KG9H4dJEpcanhKQf9FtqjpOwvIhfWWmN1zUo1lD/pl0=
 github.com/lijuuu/GlobalProtoXcode v0.0.0-20250304124659-612de4d8ccdf/go.mod h1:LtB4zCv4uCT722mZkbuKBzZAoyLkeKgDDXEE5nr2cLk=
+github.com/lijuuu/GlobalProtoXcode v0.0.0-20250305053615-dad7b4bd18f6 h1:s+OrbYOvIs50IZ2Zgsx/CDYU1F3eC5keDpL+Z/8hw6k=
+github.com/lijuuu/GlobalProtoXcode v0.0.0-20250305053615-dad7b4bd18f6/go.mod h1:LtB4zCv4uCT722mZkbuKBzZAoyLkeKgDDXEE5nr2cLk=
+github.com/lijuuu/GlobalProtoXcode v0.0.0-20250305054128-66e92cedbd5b h1:TVB70RN7fwi/KWb3+50z0A/llGXG7i0sCQad5ZN7SFA=
+github.com/lijuuu/GlobalProtoXcode v0.0.0-20250305054128-66e92cedbd5b/go.mod h1:LtB4zCv4uCT722mZkbuKBzZAoyLkeKgDDXEE5nr2cLk=
+github.com/lijuuu/GlobalProtoXcode v0.0.0-20250305062854-eb8c5181063f h1:8IkYbNqCMJz3ht2+3V3DQrDwC1MFAekJqoKPZmMriLo=
+github.com/lijuuu/GlobalProtoXcode v0.0.0-20250305062854-eb8c5181063f/go.mod h1:LtB4zCv4uCT722mZkbuKBzZAoyLkeKgDDXEE5nr2cLk=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=

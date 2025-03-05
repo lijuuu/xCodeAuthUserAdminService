@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -53,18 +54,23 @@ func (r *UserRepository) CreateUser(req *AuthUserAdminService.RegisterUserReques
 
 	user := db.User{
 		ID:             uuid.New().String(),
-		UserName:       strings.Split(req.Email, "@")[0],
+		UserName:       strings.Split(req.Email, "@")[0][:4] + uuid.New().String()[:4],
 		CreatedAt:      time.Now().Unix(),
 		FirstName:      req.FirstName,
 		LastName:       req.LastName,
 		Email:          req.Email,
 		Salt:           salt,
+		Role:           "USER",
+		AuthType:       "email",
+		IsBanned:       false,
 		HashedPassword: string(hashedPassword),
 	}
 
 	if err := r.db.Create(&user).Error; err != nil {
 		return "", fmt.Errorf("failed to create user: %v", err)
 	}
+
+	fmt.Println("user", user)
 
 	otp := GenerateOTP(6)
 	verification := db.Verification{
@@ -127,6 +133,29 @@ func (r *UserRepository) GetUserByEmail(email string) (db.User, error) {
 		return db.User{}, errors.New("Unable to retrieve user information. Please try again.")
 	}
 	return user, nil
+}
+
+func (r *UserRepository) GetUserByUserID(userID string) (db.User, error) {
+	if userID == "" {
+		return db.User{}, errors.New("user ID cannot be empty")
+	}
+	var user db.User
+	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return db.User{}, nil
+		}
+		return db.User{}, errors.New("Unable to retrieve user information. Please try again.")
+	}
+	return user, nil
+}
+
+func (r *UserRepository) UpdateUserOnTwoFactorAuth(user db.User) error {
+	if err := r.db.Model(&user).Where("id = ? AND deleted_at IS NULL", user.ID).Updates(map[string]interface{}{
+		"is_verified": false,
+	}).Error; err != nil {
+		return errors.New("Unable to update your profile. Please try again later.")
+	}
+	return nil
 }
 
 func (r *UserRepository) UpdateProfile(req *AuthUserAdminService.UpdateProfileRequest) error {
@@ -193,7 +222,7 @@ func (r *UserRepository) GetUserProfile(userID string) (*AuthUserAdminService.Ge
 			UserName:          user.UserName,
 			FirstName:         user.FirstName,
 			LastName:          user.LastName,
-			AvatarURL:         user.AvatarData,
+			AvatarData:        user.AvatarData,
 			Email:             user.Email,
 			Role:              user.Role,
 			Country:           user.Country,
@@ -201,12 +230,13 @@ func (r *UserRepository) GetUserProfile(userID string) (*AuthUserAdminService.Ge
 			IsVerified:        user.IsVerified,
 			PrimaryLanguageID: user.PrimaryLanguageID,
 			MuteNotifications: user.MuteNotifications,
+			TwoFactorEnabled:  user.TwoFactorEnabled,
 			Socials: &AuthUserAdminService.Socials{
 				Github:   user.Github,
 				Twitter:  user.Twitter,
 				Linkedin: user.Linkedin,
 			},
-			CreatedAt:         user.CreatedAt,
+			CreatedAt: user.CreatedAt,
 		},
 	}, nil
 }
@@ -215,23 +245,67 @@ func (r *UserRepository) CheckBanStatus(userID string) (*AuthUserAdminService.Ch
 	if userID == "" {
 		return nil, errors.New("user ID cannot be empty")
 	}
+
+	// First get the user to check if they're banned
 	var user db.User
 	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return nil, nil
+			return nil, errors.New("user not found")
 		}
-		return nil, fmt.Errorf("failed to check ban status: %v", err)
+		return nil, errors.New("unable to check user status")
 	}
 
-	resp := &AuthUserAdminService.CheckBanStatusResponse{
-		IsBanned: user.IsBanned,
-		Reason:   user.BanReason,
-		Message:  "Ban status checked",
+	// If user is not banned, return early
+	if !user.IsBanned {
+		return &AuthUserAdminService.CheckBanStatusResponse{
+			IsBanned: false,
+			Message:  "User is not banned",
+		}, nil
 	}
-	if user.BanExpiration != 0 {
-		resp.BanExpiration = user.BanExpiration
+
+	// Get the latest ban from ban history using the latest_ban_id
+	var banHistory db.BanHistory
+	if err := r.db.Where("id = ?", user.BanID).First(&banHistory).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			// If no ban history found but user is marked as banned, fix the inconsistency
+			if err := r.db.Model(&user).Updates(map[string]interface{}{
+				"is_banned":      false,
+				"ban_id":         nil,
+			}).Error; err != nil {
+				return nil, errors.New("unable to update user ban status")
+			}
+			return &AuthUserAdminService.CheckBanStatusResponse{
+				IsBanned: false,
+				Message:  "User is not banned",
+			}, nil
+		}
+		return nil, errors.New("unable to retrieve ban information")
 	}
-	return resp, nil
+
+	// Check if the ban has expired
+	if banHistory.BanExpiry != 0 && banHistory.BanExpiry < time.Now().Unix() {
+		// Ban has expired, update user status
+		if err := r.db.Model(&user).Updates(map[string]interface{}{
+			"is_banned":      false,
+			"ban_id":         nil,
+		}).Error; err != nil {
+			return nil, errors.New("unable to update expired ban status")
+		}
+		return &AuthUserAdminService.CheckBanStatusResponse{
+			IsBanned: false,
+			Message:  "Previous ban has expired",
+		}, nil
+	}
+
+	fmt.Println("banHistory", banHistory)
+
+	// Ban is still active
+	return &AuthUserAdminService.CheckBanStatusResponse{
+		IsBanned:      true,
+		Reason:        banHistory.BanReason,
+		BanExpiration: banHistory.BanExpiry,
+		Message:       "User is currently banned",
+	}, nil
 }
 
 func (r *UserRepository) FollowUser(followerID, followeeID string) error {
@@ -436,20 +510,22 @@ func (r *UserRepository) BanUser(userID, banReason string, banExpiry int64, banT
 	if userID == "" {
 		return errors.New("user ID cannot be empty")
 	}
+	uuid := uuid.New().String()
 	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).
 		Updates(map[string]interface{}{
 			"is_banned": true,
+			"ban_id":   uuid,
 		}).Error; err != nil {
 		return errors.New("Unable to process ban request. Please try again.")
 	}
 
 	banHistory := db.BanHistory{
-		ID:        uuid.New().String(),
+		ID:        uuid,
 		UserID:    userID,
 		BanType:   banType,
 		BannedAt:  time.Now().Unix(),
 		BanReason: banReason,
-		BanExpiry: banExpiry,
+		BanExpiry: time.Now().Add(time.Duration(banExpiry) * time.Hour).Unix(),
 	}
 
 	if err := r.db.Create(&banHistory).Error; err != nil {
@@ -551,17 +627,17 @@ func (r *UserRepository) GetAllUsers(req *AuthUserAdminService.GetAllUsersReques
 	return profiles, int32(totalCount), nil
 }
 
-func (r *UserRepository) ChangePassword(userID, hashedPassword string) error {
-	if userID == "" {
-		return errors.New("user ID cannot be empty")
+func (r *UserRepository) ChangePassword(email, hashedPassword string) error {
+	if email == "" {
+		return errors.New("email cannot be empty")
 	}
 	if hashedPassword == "" {
 		return errors.New("password cannot be empty")
 	}
-	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).
+	if err := r.db.Model(&db.User{}).Where("email = ? AND deleted_at IS NULL", email).
 		Updates(map[string]interface{}{
-			"password":   hashedPassword,
-			"updated_at": time.Now().Unix(),
+			"hashed_password": hashedPassword,
+			"updated_at":      time.Now().Unix(),
 		}).Error; err != nil {
 		return errors.New("Unable to update your password. Please try again later.")
 	}
@@ -610,11 +686,11 @@ func (r *UserRepository) GetUserFor2FA(userID string) (*db.User, error) {
 	return &user, nil
 }
 
-func (r *UserRepository) Update2FAStatus(userID string, enable bool) error {
+func (r *UserRepository) Update2FAStatus(userID string, TwoFactorAuth bool) error {
 	if userID == "" {
 		return errors.New("user ID cannot be empty")
 	}
-	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).Update("is_2fa_enabled", enable).Error; err != nil {
+	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).Update("two_factor_enabled", TwoFactorAuth).Error; err != nil {
 		return fmt.Errorf("failed to update 2FA status: %v", err)
 	}
 	return nil
@@ -730,7 +806,7 @@ func (r *UserRepository) CreateForgotPasswordToken(email, token string) (string,
 		return "", fmt.Errorf("failed to retrieve user: %v", err)
 	}
 
-	if err := r.db.Where("user_id = ? AND expiry_at > ? AND used = ?", user.ID, time.Now(), false).Delete(&db.ForgotPassword{}).Error; err != nil {
+	if err := r.db.Where("user_id = ? AND expiry_at > ? AND used = ?", user.ID, time.Now().Unix(), false).Delete(&db.ForgotPassword{}).Error; err != nil {
 		return "", fmt.Errorf("failed to clear existing reset token: %v", err)
 	}
 
@@ -750,7 +826,8 @@ func (r *UserRepository) CreateForgotPasswordToken(email, token string) (string,
 	if r.config.APPURL == "" {
 		log.Printf("APPURL not configured, skipping email send")
 	} else {
-		resetLink := fmt.Sprintf("%s/auth/finish-forgot-password?token=%s", r.config.APPURL, token)
+		resetLink := fmt.Sprintf("%s/api/v1/auth/password/reset?token=%s", r.config.APPURL, token)
+		fmt.Println(resetLink)
 		if err := r.SendForgotPasswordEmail(user.Email, resetLink); err != nil {
 			log.Printf("Failed to send password reset email: %v", err)
 		}
@@ -764,7 +841,7 @@ func (r *UserRepository) VerifyForgotPasswordToken(userID, token string) (bool, 
 		return false, errors.New("user ID or token cannot be empty")
 	}
 	var forgot db.ForgotPassword
-	if err := r.db.Where("user_id = ? AND token = ? AND expiry_at > ? AND used = ?", userID, token, time.Now(), false).First(&forgot).Error; err != nil {
+	if err := r.db.Where("user_id = ? AND token = ? AND expiry_at > ? AND used = ?", userID, token, time.Now().Unix(), false).First(&forgot).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return false, nil
 		}
@@ -777,43 +854,82 @@ func (r *UserRepository) VerifyForgotPasswordToken(userID, token string) (bool, 
 	return true, nil
 }
 
-func (r *UserRepository) FinishForgotPassword(userID, token, newPassword string) error {
-	if userID == "" || token == "" || newPassword == "" {
-		return errors.New("user ID, token, or new password cannot be empty")
+func (r *UserRepository) FinishForgotPassword(email, token, newPassword string) error {
+	// First get the user by email to get their ID
+	var user db.User
+	if err := r.db.Where("email = ? AND deleted_at IS NULL", email).First(&user).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return errors.New("no account found with this email address")
+		}
+		return errors.New("unable to process password reset - please try again")
 	}
-	verified, err := r.VerifyForgotPasswordToken(userID, token)
+
+	// Now check the forgot password token using the user's ID
+	var forgotPassword db.ForgotPassword
+	if err := r.db.Where("user_id = ? AND token = ? AND expiry_at > ? AND used = ?",
+		user.ID,
+		token,
+		time.Now().Unix(),
+		false).First(&forgotPassword).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return errors.New("invalid or expired reset token - please request a new one")
+		}
+		return errors.New("unable to verify reset token - please try again")
+	}
+
+	// Hash the new password
+	salt := uuid.New().String()
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(newPassword+salt), bcrypt.DefaultCost)
 	if err != nil {
-		return fmt.Errorf("failed to verify password reset token: %v", err)
-	}
-	if !verified {
-		return errors.New("invalid or expired password reset token")
+		return errors.New("unable to process new password - please try again")
 	}
 
-	if !IsValidPassword(newPassword) {
-		return errors.New("invalid password format: must be at least 8 characters, include an uppercase letter, and a digit")
+	// Update the user's password within a transaction
+	tx := r.db.Begin()
+	if err := tx.Error; err != nil {
+		return errors.New("unable to process password reset - please try again")
 	}
 
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("failed to hash password: %v", err)
+	// Update password and salt
+	if err := tx.Model(&user).Updates(map[string]interface{}{
+		"hashed_password": string(hashedPassword),
+		"salt":            salt,
+		"updated_at":      time.Now().Unix(),
+	}).Error; err != nil {
+		tx.Rollback()
+		return errors.New("unable to update password - please try again")
 	}
 
-	return r.ChangePassword(userID, string(hashedPassword))
+	// Mark token as used
+	if err := tx.Model(&forgotPassword).Updates(map[string]interface{}{
+		"used": true,
+	}).Error; err != nil {
+		tx.Rollback()
+		return errors.New("unable to complete password reset - please try again")
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return errors.New("unable to complete password reset - please try again")
+	}
+
+	return nil
 }
 
 func (r *UserRepository) ChangeAuthenticatedPassword(userID, oldPassword, newPassword string) error {
 	if userID == "" || oldPassword == "" || newPassword == "" {
 		return errors.New("user ID, old password, or new password cannot be empty")
 	}
-	user, err := r.GetUserByEmail(userID)
+	user, err := r.GetUserByUserID(userID)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve user: %v", err)
 	}
 
+	fmt.Println(user)
 	if user.HashedPassword == "" {
 		return errors.New("no existing password found for user")
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.HashedPassword), []byte(oldPassword)); err != nil {
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.HashedPassword), []byte(oldPassword+user.Salt)); err != nil {
 		return errors.New("invalid old password")
 	}
 
@@ -821,12 +937,12 @@ func (r *UserRepository) ChangeAuthenticatedPassword(userID, oldPassword, newPas
 		return errors.New("invalid password format: must be at least 8 characters, include an uppercase letter, and a digit")
 	}
 
-	hashedNewPassword, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	hashedNewPassword, err := bcrypt.GenerateFromPassword([]byte(newPassword+user.Salt), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("failed to hash password: %v", err)
 	}
 
-	return r.ChangePassword(userID, string(hashedNewPassword))
+	return r.ChangePassword(user.Email, string(hashedNewPassword))
 }
 
 // Helper functions
@@ -884,7 +1000,7 @@ func (r *UserRepository) GetBanHistory(userID string) ([]*AuthUserAdminService.B
 		return nil, errors.New("user ID cannot be empty")
 	}
 	var bans []db.BanHistory
-	if err := r.db.Where("user_id = ? AND deleted_at IS NULL", userID).Find(&bans).Error; err != nil {
+	if err := r.db.Where("user_id = ?", userID).Find(&bans).Error; err != nil {
 		return nil, fmt.Errorf("failed to retrieve ban history: %v", err)
 	}
 
@@ -902,30 +1018,45 @@ func (r *UserRepository) GetBanHistory(userID string) ([]*AuthUserAdminService.B
 	return history, nil
 }
 
-func (r *UserRepository) SearchUsers(query string) ([]*AuthUserAdminService.UserProfile, error) {
+func (r *UserRepository) SearchUsers(query, pageToken string, limit int32) ([]*AuthUserAdminService.UserProfile, string, error) {
 	var users []db.User
-	queryBuilder := r.db.Where("deleted_at IS NULL")
-	if query != "" {
-		queryBuilder = queryBuilder.Where("first_name ILIKE ? OR last_name ILIKE ? OR email ILIKE ?", "%"+query+"%", "%"+query+"%", "%"+query+"%")
+	queryBuilder := r.db.Where("deleted_at IS NULL").Order("id ASC")
+
+	//check for base64encoded pagetoken
+	if pageToken != "" {
+		//decode pagetkn
+		decodedToken, err := base64.StdEncoding.DecodeString(pageToken)
+		if err != nil {
+			pageToken = ""
+		}
+		lastID, err := uuid.Parse(string(decodedToken))
+		if err != nil {
+			pageToken = ""
+		}
+		queryBuilder = queryBuilder.Where("id > ?", lastID)
 	}
-	if err := queryBuilder.Find(&users).Error; err != nil {
-		return nil, fmt.Errorf("failed to retrieve users: %v", err)
+
+	if query != "" {
+		queryBuilder = queryBuilder.Where("first_name ILIKE ? OR last_name ILIKE ? OR email ILIKE ? OR user_name ILIKE ?", "%"+query+"%", "%"+query+"%", "%"+query+"%", "%"+query+"%")
+	}
+
+	if err := queryBuilder.Limit(int(limit) + 1).Find(&users).Error; err != nil {
+		return nil, "", fmt.Errorf("failed to retrieve users: %v", err)
 	}
 
 	var profiles []*AuthUserAdminService.UserProfile
 	for _, u := range users {
 		profiles = append(profiles, &AuthUserAdminService.UserProfile{
 			UserID:            u.ID,
-			UserName:          "",
+			UserName:          u.UserName,
 			FirstName:         u.FirstName,
 			LastName:          u.LastName,
-			AvatarURL:         u.AvatarData,
+			AvatarData:        u.AvatarData,
 			Email:             u.Email,
 			Role:              u.Role,
 			Country:           u.Country,
 			IsBanned:          u.IsBanned,
 			PrimaryLanguageID: u.PrimaryLanguageID,
-			MuteNotifications: u.MuteNotifications,
 			Socials: &AuthUserAdminService.Socials{
 				Github:   u.Github,
 				Twitter:  u.Twitter,
@@ -934,5 +1065,34 @@ func (r *UserRepository) SearchUsers(query string) ([]*AuthUserAdminService.User
 			CreatedAt: u.CreatedAt,
 		})
 	}
-	return profiles, nil
+
+	var nextPageToken string
+	if len(profiles) > int(limit) {
+		profiles = profiles[:limit]
+		lastID := profiles[len(profiles)-1].UserID
+		nextPageToken = base64.StdEncoding.EncodeToString([]byte(lastID))
+	}
+
+	return profiles, nextPageToken, nil
+}
+
+func (r *UserRepository) LogoutUser(userID string) error {
+	if userID == "" {
+		return errors.New("user ID cannot be empty")
+	}
+
+	var user db.User
+	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
+		return fmt.Errorf("failed to retrieve user: %v", err)
+	}
+
+	if !user.TwoFactorEnabled {
+		return nil
+	}
+
+	if err := r.db.Model(&user).Update("is_verified", false).Error; err != nil {
+		return fmt.Errorf("failed to toggle verification: %v", err)
+	}
+
+	return nil
 }

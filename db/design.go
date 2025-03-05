@@ -19,10 +19,9 @@ type User struct {
 	HashedPassword    string         `gorm:"type:varchar(255);not null" json:"hashed_password"`
 	MuteNotifications bool           `gorm:"default:false;not null" json:"mute_notifications"`
 	IsBanned          bool           `gorm:"default:false;not null;index" json:"is_banned"`
-	BanReason         string         `gorm:"type:text" json:"ban_reason"`
-	BanExpiration     int64          `gorm:"type:bigint" json:"ban_expiration"`
+	BanID             string         `gorm:"type:varchar(255)" json:"ban_id"`
+	TwoFactorEnabled  bool           `gorm:"default:false;not null" json:"two_factor_enabled"`
 	IsVerified        bool           `gorm:"default:false;not null" json:"is_verified"`
-	Status            string         `gorm:"type:varchar(50);default:'active';not null;index:idx_role_status" json:"status"`
 	AvatarData        string         `gorm:"type:text" json:"avatar_data"`
 	Github            string         `gorm:"type:varchar(255)" json:"github"`
 	Twitter           string         `gorm:"type:varchar(255)" json:"twitter"`

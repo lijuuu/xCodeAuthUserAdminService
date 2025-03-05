@@ -78,6 +78,14 @@ func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdmin
 		return nil, status.Error(codes.NotFound, "No account exists with this email address. Please verify or register.")
 	}
 
+	banStatus, err := s.repo.CheckBanStatus(user.ID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "An error occurred while checking your ban status. Please try again.")
+	}
+	if banStatus.IsBanned {
+		return nil, status.Error(codes.Unauthenticated, "Your account has been banned. Please contact support.")
+	}
+
 	valid, err := s.repo.CheckUserPassword(user.ID, req.Password)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "An error occurred while verifying your password. Please try again.")
@@ -90,6 +98,14 @@ func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdmin
 		return nil, status.Error(codes.Unauthenticated, "Your email address requires verification. Please check your inbox.")
 	}
 
+	// if user.TwoFactorEnabled {
+	// 	// err = s.repo.UpdateUserOnTwoFactorAuth(user)
+	// 	// if err != nil {
+	// 	// 	return nil, status.Error(codes.Internal, "An error occurred while processing your account. Please try again.")
+	// 	// }
+	// 	return nil, status.Error(codes.Unauthenticated, "Your account requires two-factor authentication. Please check your sent your code along with the login request")
+	// }
+
 	rtoken, _, err := utils.GenerateJWT(user.ID, "USER", s.jwtSecret, 30*24*time.Hour)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "An error occurred while generating your login token. Please try again.")
@@ -100,13 +116,28 @@ func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdmin
 		return nil, status.Error(codes.Internal, "An error occurred while generating your login token. Please try again.")
 	}
 
+	fmt.Println(user)
+
 	return &authUserAdminService.LoginUserResponse{
 		UserProfile: &authUserAdminService.UserProfile{
 			UserID:    user.ID,
 			FirstName: user.FirstName,
 			LastName:  user.LastName,
-			Email:     user.Email,
-			Country:   user.Country,
+			Email:             user.Email,
+			Role:              user.Role,
+			IsVerified:        user.IsVerified,
+			IsBanned:          user.IsBanned,
+			PrimaryLanguageID: user.PrimaryLanguageID,
+			Country:           user.Country,
+			TwoFactorEnabled:  user.TwoFactorEnabled,
+			AvatarData:        user.AvatarData,
+			UserName:          user.UserName,
+			Socials: &authUserAdminService.Socials{
+				Github:   user.Github,
+				Twitter:  user.Twitter,
+				Linkedin: user.Linkedin,
+			},
+			CreatedAt: user.CreatedAt,
 		},
 		RefreshToken: rtoken,
 		AccessToken:  atoken,
@@ -129,7 +160,7 @@ func (s *AuthUserAdminService) LoginAdmin(ctx context.Context, req *authUserAdmi
 		return nil, status.Error(codes.PermissionDenied, "This account does not have administrative privileges.")
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.HashedPassword), []byte(req.Password)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(user.HashedPassword), []byte(req.Password + user.Salt)); err != nil {
 		return nil, status.Error(codes.Unauthenticated, "The admin password provided is incorrect. Please try again.")
 	}
 
@@ -137,13 +168,13 @@ func (s *AuthUserAdminService) LoginAdmin(ctx context.Context, req *authUserAdmi
 		return nil, status.Error(codes.Unauthenticated, "This admin account requires verification. Please contact support.")
 	}
 
-	rtoken, expiresIn, err := utils.GenerateJWT(user.ID, "ADMIN", s.jwtSecret, 30*24*time.Hour)
+	atoken, expiresIn, err := utils.GenerateJWT(user.ID, "ADMIN", s.jwtSecret, 30*24*time.Hour)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "An error occurred while generating your admin token. Please try again.")
 	}
 
 	return &authUserAdminService.LoginAdminResponse{
-		RefreshToken: rtoken,
+		AccessToken:  atoken,
 		ExpiresIn:    expiresIn,
 		AdminID:      user.ID,
 		Message:      "Admin login successful. Welcome back.",
@@ -174,6 +205,9 @@ func (s *AuthUserAdminService) TokenRefresh(ctx context.Context, req *authUserAd
 
 // LogoutUser handles user logout (placeholder, as JWT is stateless)
 func (s *AuthUserAdminService) LogoutUser(ctx context.Context, req *authUserAdminService.LogoutRequest) (*authUserAdminService.LogoutResponse, error) {
+
+
+
 	return &authUserAdminService.LogoutResponse{
 		Message: "You have been logged out successfully.",
 	}, nil
@@ -207,9 +241,13 @@ func (s *AuthUserAdminService) VerifyUser(ctx context.Context, req *authUserAdmi
 
 // SetTwoFactorAuth enables/disables 2FA
 func (s *AuthUserAdminService) ToggleTwoFactorAuth(ctx context.Context, req *authUserAdminService.ToggleTwoFactorAuthRequest) (*authUserAdminService.ToggleTwoFactorAuthResponse, error) {
-	_, err := s.repo.GetUserProfile(req.UserID)
+	user, err := s.repo.GetUserProfile(req.UserID)
 	if err != nil {
 		return nil, status.Error(codes.NotFound, "Your account could not be found. Please log in again.")
+	}
+
+	if !user.UserProfile.IsVerified {
+		return nil, status.Error(codes.PermissionDenied, "Your account has not been verified. Please verify your account.")
 	}
 
 	valid, err := s.repo.CheckUserPassword(req.UserID, req.Password)
@@ -225,12 +263,12 @@ func (s *AuthUserAdminService) ToggleTwoFactorAuth(ctx context.Context, req *aut
 		return nil, status.Error(codes.Internal, "An error occurred while updating two-factor authentication. Please try again.")
 	}
 
-	status := "enabled"
+	isEnabled := "enabled"
 	if !req.TwoFactorAuth {
-		status = "disabled"
+		isEnabled = "disabled"
 	}
 	return &authUserAdminService.ToggleTwoFactorAuthResponse{
-		Message: fmt.Sprintf("Two-factor authentication has been %s for your account.", status),
+		Message: fmt.Sprintf("Two-factor authentication has been %s for your account.", isEnabled),
 	}, nil
 }
 
@@ -261,7 +299,7 @@ func (s *AuthUserAdminService) FinishForgotPassword(ctx context.Context, req *au
 		return nil, status.Error(codes.InvalidArgument, "Password must be at least 8 characters and include an uppercase letter and a number.")
 	}
 
-	err := s.repo.FinishForgotPassword(req.UserID, req.Token, req.NewPassword)
+	err := s.repo.FinishForgotPassword(req.Email, req.Token, req.NewPassword)
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +335,19 @@ func (s *AuthUserAdminService) UpdateProfile(ctx context.Context, req *authUserA
 		return nil, status.Error(codes.Internal, "An error occurred while updating your profile. Please try again.")
 	}
 	return &authUserAdminService.UpdateProfileResponse{
+		UserProfile: &authUserAdminService.UserProfile{
+			UserID:            req.UserID,
+			FirstName:         req.FirstName,
+			LastName:          req.LastName,
+			PrimaryLanguageID: req.PrimaryLanguageID,
+			Country:           req.Country,
+			UserName:          req.UserName,
+			Socials: &authUserAdminService.Socials{
+				Github:   req.Socials.Github,
+				Twitter:  req.Socials.Twitter,
+				Linkedin: req.Socials.Linkedin,
+			},
+		},
 		Message: "Your profile has been updated successfully.",
 	}, nil
 }
@@ -427,15 +478,8 @@ func (s *AuthUserAdminService) UpdateUserAdmin(ctx context.Context, req *authUse
 
 // BlockUser sets a user as banned
 func (s *AuthUserAdminService) BanUser(ctx context.Context, req *authUserAdminService.BanUserRequest) (*authUserAdminService.BanUserResponse, error) {
-	isAdmin, err := s.repo.IsAdmin(req.UserID)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "An error occurred while verifying admin privileges. Please try again.")
-	}
-	if !isAdmin {
-		return nil, status.Error(codes.PermissionDenied, "Administrative privileges are required to ban a user.")
-	}
 
-	err = s.repo.BanUser(req.UserID, req.BanReason, req.BanExpiry, req.BanType)
+	err := s.repo.BanUser(req.UserID, req.BanReason, req.BanExpiry, req.BanType)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "An error occurred while banning the user. Please try again.")
 	}
@@ -446,15 +490,8 @@ func (s *AuthUserAdminService) BanUser(ctx context.Context, req *authUserAdminSe
 
 // UnblockUser removes a user's ban
 func (s *AuthUserAdminService) UnbanUser(ctx context.Context, req *authUserAdminService.UnbanUserRequest) (*authUserAdminService.UnbanUserResponse, error) {
-	isAdmin, err := s.repo.IsAdmin(req.UserID)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "An error occurred while verifying admin status. Please try again.")
-	}
-	if !isAdmin {
-		return nil, status.Error(codes.PermissionDenied, "Administrative privileges are required to unban a user.")
-	}
 
-	err = s.repo.UnbanUser(req.UserID)
+	err := s.repo.UnbanUser(req.UserID)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "An error occurred while unbanning the user. Please try again.")
 	}
@@ -465,15 +502,7 @@ func (s *AuthUserAdminService) UnbanUser(ctx context.Context, req *authUserAdmin
 
 // VerifyAdminUser verifies a user (admin action)
 func (s *AuthUserAdminService) VerifyAdminUser(ctx context.Context, req *authUserAdminService.VerifyAdminUserRequest) (*authUserAdminService.VerifyAdminUserResponse, error) {
-	isAdmin, err := s.repo.IsAdmin(req.UserID)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "An error occurred while verifying admin status. Please try again.")
-	}
-	if !isAdmin {
-		return nil, status.Error(codes.PermissionDenied, "Administrative privileges are required to verify a user.")
-	}
-
-	err = s.repo.VerifyAdminUser(req.UserID)
+	err := s.repo.VerifyAdminUser(req.UserID)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "An error occurred while verifying the user. Please try again.")
 	}
@@ -484,15 +513,8 @@ func (s *AuthUserAdminService) VerifyAdminUser(ctx context.Context, req *authUse
 
 // UnverifyUser un-verifies a user (admin action)
 func (s *AuthUserAdminService) UnverifyUser(ctx context.Context, req *authUserAdminService.UnverifyUserAdminRequest) (*authUserAdminService.UnverifyUserAdminResponse, error) {
-	isAdmin, err := s.repo.IsAdmin(req.UserID)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "An error occurred while verifying admin status. Please try again.")
-	}
-	if !isAdmin {
-		return nil, status.Error(codes.PermissionDenied, "Administrative privileges are required to unverify a user.")
-	}
 
-	err = s.repo.UnverifyUser(req.UserID)
+	err := s.repo.UnverifyUser(req.UserID)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "An error occurred while unverifying the user. Please try again.")
 	}
@@ -545,12 +567,13 @@ func (s *AuthUserAdminService) BanHistory(ctx context.Context, req *authUserAdmi
 }
 
 func (s *AuthUserAdminService) SearchUsers(ctx context.Context, req *authUserAdminService.SearchUsersRequest) (*authUserAdminService.SearchUsersResponse, error) {
-	users, err := s.repo.SearchUsers(req.Query)
+	users, nextPageToken, err := s.repo.SearchUsers(req.Query, req.PageToken, req.Limit)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "An error occurred while searching for users. Please try again.")
 	}
 	return &authUserAdminService.SearchUsersResponse{
-		Users:   users,
+		Users:       users,
+		NextPageToken: nextPageToken,
 		Message: "User search completed successfully.",
 	}, nil
 }
