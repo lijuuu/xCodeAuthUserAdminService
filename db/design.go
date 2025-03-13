@@ -14,7 +14,9 @@ type User struct {
 	Role              string         `gorm:"type:varchar(50);not null;index:idx_role_status" json:"role"`
 	PrimaryLanguageID string         `gorm:"type:varchar(10);not null" json:"primary_language_id"`
 	Email             string         `gorm:"type:varchar(255);unique;not null;index" json:"email"`
-	AuthType          string         `gorm:"type:varchar(50);not null" json:"auth_type"`
+	AuthType          string         `gorm:"type:varchar(50);not null" json:"auth_type"` // email, google, github
+	// AuthID            string         `gorm:"type:varchar(255)" json:"auth_id"` // google id, github id
+	// AuthToken         string         `gorm:"type:varchar(255)" json:"auth_token"` // google token, github token
 	Salt              string         `gorm:"type:varchar(255);not null" json:"salt"`
 	HashedPassword    string         `gorm:"type:varchar(255);not null" json:"hashed_password"`
 	MuteNotifications bool           `gorm:"default:false;not null" json:"mute_notifications"`

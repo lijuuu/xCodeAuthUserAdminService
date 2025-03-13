@@ -3,7 +3,6 @@ package repository
 import (
 	"bytes"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"image/png"
 	"log"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"xcode/customerrors"
 	"xcode/db"
 	"xcode/utils"
 
@@ -36,24 +36,24 @@ func NewUserRepository(db *gorm.DB, config *configs.Config) *UserRepository {
 	return &UserRepository{db: db, config: config}
 }
 
-func (r *UserRepository) CreateUser(req *AuthUserAdminService.RegisterUserRequest) (string, error) {
+func (r *UserRepository) CreateUser(req *AuthUserAdminService.RegisterUserRequest) (string, string, error) {
 	if req == nil {
-		return "", errors.New("registration request cannot be nil")
+		return "", customerrors.ERR_PARAM_EMPTY, fmt.Errorf("registration request cannot be nil")
 	}
 	if req.Password != req.ConfirmPassword {
-		return "", errors.New("The passwords you entered do not match. Please try again.")
+		return "", customerrors.ERR_REG_PASSWORD_MISMATCH, fmt.Errorf("the passwords you entered do not match")
 	}
 	if !IsValidEmail(req.Email) {
-		return "", errors.New("Please enter a valid email address.")
+		return "", customerrors.ERR_REG_INVALID_EMAIL, fmt.Errorf("please enter a valid email address")
 	}
 	if !IsValidPassword(req.Password) {
-		return "", errors.New("Password must be at least 8 characters long and include at least one uppercase letter and one number.")
+		return "", customerrors.ERR_REG_INVALID_PASSWORD, fmt.Errorf("password must be at least 8 characters long and include at least one uppercase letter and one number")
 	}
 
 	salt := uuid.New().String()
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password+salt), bcrypt.DefaultCost)
 	if err != nil {
-		return "", fmt.Errorf("failed to hash password: %v", err)
+		return "", customerrors.ERR_PASSWORD_HASH_FAILED, fmt.Errorf("failed to hash password")
 	}
 
 	user := db.User{
@@ -71,103 +71,86 @@ func (r *UserRepository) CreateUser(req *AuthUserAdminService.RegisterUserReques
 	}
 
 	if err := r.db.Create(&user).Error; err != nil {
-		return "", fmt.Errorf("failed to create user: %v", err)
+		return "", customerrors.ERR_REG_CREATION_FAILED, fmt.Errorf("failed to create user")
 	}
 
-	fmt.Println("user", user)
-
-	otp := GenerateOTP(6)
-	verification := db.Verification{
-		ID:        uuid.New().String(),
-		UserID:    user.ID,
-		Email:     user.Email,
-		Token:     otp,
-		CreatedAt: time.Now().Unix(),
-		ExpiryAt:  time.Now().Add(30 * time.Minute).Unix(),
-		Used:      false,
-	}
-	if err := r.db.Create(&verification).Error; err != nil {
-		return "", fmt.Errorf("failed to create verification record: %v", err)
-	}
-
-	go r.SendVerificationEmail(user.Email, otp)
-
-	return user.ID, nil
+	return user.ID, "", nil
 }
 
-func (r *UserRepository) CheckUserPassword(userID, password string) (bool, error) {
+func (r *UserRepository) CheckUserPassword(userID, password string) (bool, string, error) {
 	if userID == "" {
-		return false, errors.New("user ID cannot be empty")
+		return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	var user db.User
 	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return false, errors.New("user not found")
+			return false, customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("user not found")
 		}
-		return false, errors.New("Unable to verify your credentials. Please try again.")
+		return false, customerrors.ERR_CRED_CHECK_FAILED, fmt.Errorf("unable to verify credentials")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.HashedPassword), []byte(password+user.Salt)); err != nil {
-		return false, errors.New("Incorrect password. Please try again.")
+		fmt.Println("error ", err)
+		return false, customerrors.ERR_CRED_WRONG, fmt.Errorf("incorrect password")
 	}
-	return true, nil
+	return true, "", nil
 }
 
-func (r *UserRepository) CheckAdminPassword(password string) (bool, error) {
+func (r *UserRepository) CheckAdminPassword(password string) (bool, string, error) {
 	if password == "" {
-		return false, errors.New("password cannot be empty")
+		return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("password cannot be empty")
 	}
 	if r.config.AdminPassword == "" {
-		return false, errors.New("admin password not configured")
+		return false, customerrors.ERR_ADMIN_NOT_CONFIGURED, fmt.Errorf("admin password not configured")
 	}
 	if password != r.config.AdminPassword {
-		return false, errors.New("Invalid admin credentials. Please check your password and try again.")
+		return false, customerrors.ERR_CRED_WRONG, fmt.Errorf("invalid admin credentials")
 	}
-	return true, nil
+	return true, "", nil
 }
 
-func (r *UserRepository) GetUserByEmail(email string) (db.User, error) {
+func (r *UserRepository) GetUserByEmail(email string) (db.User, string, error) {
 	if email == "" {
-		return db.User{}, errors.New("email cannot be empty")
+		return db.User{}, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("email cannot be empty")
 	}
 	var user db.User
 	if err := r.db.Where("email = ? AND deleted_at IS NULL", email).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return db.User{}, nil
+			return db.User{}, "", nil
 		}
-		return db.User{}, errors.New("Unable to retrieve user information. Please try again.")
+		return db.User{}, customerrors.ERR_CRED_CHECK_FAILED, fmt.Errorf("unable to retrieve user")
 	}
-	return user, nil
+	return user, "", nil
 }
 
-func (r *UserRepository) GetUserByUserID(userID string) (db.User, error) {
+func (r *UserRepository) GetUserByUserID(userID string) (db.User, string, error) {
 	if userID == "" {
-		return db.User{}, errors.New("user ID cannot be empty")
+		return db.User{}, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	var user db.User
 	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return db.User{}, nil
+			return db.User{}, "", nil
 		}
-		return db.User{}, errors.New("Unable to retrieve user information. Please try again.")
+		return db.User{}, customerrors.ERR_CRED_CHECK_FAILED, fmt.Errorf("unable to retrieve user")
 	}
-	return user, nil
+	return user, "", nil
 }
 
-func (r *UserRepository) UpdateUserOnTwoFactorAuth(user db.User) error {
+func (r *UserRepository) UpdateUserOnTwoFactorAuth(user db.User) (string, error) {
 	if err := r.db.Model(&user).Where("id = ? AND deleted_at IS NULL", user.ID).Updates(map[string]interface{}{
 		"is_verified": false,
 	}).Error; err != nil {
-		return errors.New("Unable to update your profile. Please try again later.")
+		return customerrors.ERR_PROFILE_UPDATE_FAILED, fmt.Errorf("unable to update profile")
 	}
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) UpdateProfile(req *AuthUserAdminService.UpdateProfileRequest) error {
+func (r *UserRepository) UpdateProfile(req *AuthUserAdminService.UpdateProfileRequest) (string, error) {
 	if req == nil {
-		return errors.New("update profile request cannot be nil")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("update profile request cannot be nil")
 	}
 	if req.UserID == "" {
-		return errors.New("user ID cannot be empty")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	socials := &AuthUserAdminService.Socials{}
 	if req.Socials != nil {
@@ -186,38 +169,38 @@ func (r *UserRepository) UpdateProfile(req *AuthUserAdminService.UpdateProfileRe
 		UpdatedAt:         time.Now().Unix(),
 	}
 	if err := r.db.Model(&user).Where("id = ? AND deleted_at IS NULL", req.UserID).Updates(user).Error; err != nil {
-		return errors.New("Unable to update your profile. Please try again later.")
+		return customerrors.ERR_PROFILE_UPDATE_FAILED, fmt.Errorf("unable to update profile")
 	}
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) UpdateProfileImage(req *AuthUserAdminService.UpdateProfileImageRequest) error {
+func (r *UserRepository) UpdateProfileImage(req *AuthUserAdminService.UpdateProfileImageRequest) (string, error) {
 	if req == nil {
-		return errors.New("update profile image request cannot be nil")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("update profile image request cannot be nil")
 	}
 	if req.UserID == "" {
-		return errors.New("user ID cannot be empty")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", req.UserID).
 		Updates(map[string]interface{}{
 			"avatar_data": req.AvatarURL,
 			"updated_at":  time.Now().Unix(),
 		}).Error; err != nil {
-		return errors.New("Unable to update your profile picture. Please try again.")
+		return customerrors.ERR_PROFILE_IMAGE_UPDATE_FAILED, fmt.Errorf("unable to update profile picture")
 	}
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) GetUserProfile(userID string) (*AuthUserAdminService.GetUserProfileResponse, error) {
+func (r *UserRepository) GetUserProfile(userID string) (*AuthUserAdminService.GetUserProfileResponse, string, error) {
 	if userID == "" {
-		return nil, errors.New("user ID cannot be empty")
+		return nil, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	var user db.User
 	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return nil, errors.New("User profile not found.")
+			return nil, customerrors.ERR_PROFILE_NOT_FOUND, fmt.Errorf("user profile not found")
 		}
-		return nil, errors.New("Unable to retrieve user profile. Please try again later.")
+		return nil, customerrors.ERR_CRED_CHECK_FAILED, fmt.Errorf("unable to retrieve profile")
 	}
 
 	return &AuthUserAdminService.GetUserProfileResponse{
@@ -242,110 +225,101 @@ func (r *UserRepository) GetUserProfile(userID string) (*AuthUserAdminService.Ge
 			},
 			CreatedAt: user.CreatedAt,
 		},
-	}, nil
+	}, "", nil
 }
 
-func (r *UserRepository) CheckBanStatus(userID string) (*AuthUserAdminService.CheckBanStatusResponse, error) {
+func (r *UserRepository) CheckBanStatus(userID string) (*AuthUserAdminService.CheckBanStatusResponse, string, error) {
 	if userID == "" {
-		return nil, errors.New("user ID cannot be empty")
+		return nil, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 
-	// First get the user to check if they're banned
 	var user db.User
 	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return nil, errors.New("user not found")
+			return nil, customerrors.ERR_BAN_STATUS_NOT_FOUND, fmt.Errorf("user not found")
 		}
-		return nil, errors.New("unable to check user status")
+		return nil, customerrors.ERR_BAN_STATUS_CHECK_FAILED, fmt.Errorf("unable to check ban status")
 	}
 
-	// If user is not banned, return early
 	if !user.IsBanned {
 		return &AuthUserAdminService.CheckBanStatusResponse{
 			IsBanned: false,
 			Message:  "User is not banned",
-		}, nil
+		}, "", nil
 	}
 
-	// Get the latest ban from ban history using the latest_ban_id
 	var banHistory db.BanHistory
 	if err := r.db.Where("id = ?", user.BanID).First(&banHistory).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			// If no ban history found but user is marked as banned, fix the inconsistency
 			if err := r.db.Model(&user).Updates(map[string]interface{}{
 				"is_banned": false,
 				"ban_id":    nil,
 			}).Error; err != nil {
-				return nil, errors.New("unable to update user ban status")
+				return nil, customerrors.ERR_BAN_UPDATE_FAILED, fmt.Errorf("unable to update ban status")
 			}
 			return &AuthUserAdminService.CheckBanStatusResponse{
 				IsBanned: false,
 				Message:  "User is not banned",
-			}, nil
+			}, "", nil
 		}
-		return nil, errors.New("unable to retrieve ban information")
+		return nil, customerrors.ERR_BAN_STATUS_CHECK_FAILED, fmt.Errorf("unable to retrieve ban info")
 	}
 
-	// Check if the ban has expired
 	if banHistory.BanExpiry != 0 && banHistory.BanExpiry < time.Now().Unix() {
-		// Ban has expired, update user status
 		if err := r.db.Model(&user).Updates(map[string]interface{}{
 			"is_banned": false,
 			"ban_id":    nil,
 		}).Error; err != nil {
-			return nil, errors.New("unable to update expired ban status")
+			return nil, customerrors.ERR_BAN_UPDATE_FAILED, fmt.Errorf("unable to update ban status")
 		}
 		return &AuthUserAdminService.CheckBanStatusResponse{
 			IsBanned: false,
 			Message:  "Previous ban has expired",
-		}, nil
+		}, "", nil
 	}
 
-	fmt.Println("banHistory", banHistory)
-
-	// Ban is still active
 	return &AuthUserAdminService.CheckBanStatusResponse{
 		IsBanned:      true,
 		Reason:        banHistory.BanReason,
 		BanExpiration: banHistory.BanExpiry,
 		Message:       "User is currently banned",
-	}, nil
+	}, "", nil
 }
 
-func (r *UserRepository) FollowUser(followerID, followeeID string) error {
+func (r *UserRepository) FollowUser(followerID, followeeID string) (string, error) {
 	if followerID == "" || followeeID == "" {
-		return errors.New("follower ID or followee ID cannot be empty")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("follower ID or followee ID cannot be empty")
 	}
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&db.Following{
+	if err := r.db.Transaction(func(tx *gorm.DB) error {
+		return tx.Create(&db.Following{
 			FollowerID: followerID,
 			FolloweeID: followeeID,
-		}).Error; err != nil {
-			return fmt.Errorf("failed to create following relationship: %v", err)
-		}
-		return nil
-	})
-}
-
-func (r *UserRepository) UnfollowUser(followerID, followeeID string) error {
-	if followerID == "" || followeeID == "" {
-		return errors.New("follower ID or followee ID cannot be empty")
+		}).Error
+	}); err != nil {
+		return customerrors.ERR_FOLLOW_ACTION_FAILED, fmt.Errorf("failed to follow user")
 	}
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("follower_id = ? AND followee_id = ?", followerID, followeeID).Delete(&db.Following{}).Error; err != nil {
-			return fmt.Errorf("failed to delete following relationship: %v", err)
-		}
-		return nil
-	})
+	return "", nil
 }
 
-func (r *UserRepository) GetFollowing(userID string) ([]*AuthUserAdminService.UserProfile, error) {
+func (r *UserRepository) UnfollowUser(followerID, followeeID string) (string, error) {
+	if followerID == "" || followeeID == "" {
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("follower ID or followee ID cannot be empty")
+	}
+	if err := r.db.Transaction(func(tx *gorm.DB) error {
+		return tx.Where("follower_id = ? AND followee_id = ?", followerID, followeeID).Delete(&db.Following{}).Error
+	}); err != nil {
+		return customerrors.ERR_UNFOLLOW_ACTION_FAILED, fmt.Errorf("failed to unfollow user")
+	}
+	return "", nil
+}
+
+func (r *UserRepository) GetFollowing(userID string) ([]*AuthUserAdminService.UserProfile, string, error) {
 	if userID == "" {
-		return nil, errors.New("user ID cannot be empty")
+		return nil, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	var following []db.Following
 	if err := r.db.Where("follower_id = ?", userID).Find(&following).Error; err != nil {
-		return nil, fmt.Errorf("failed to get following: %v", err)
+		return nil, customerrors.ERR_FOLLOWING_LIST_FAILED, fmt.Errorf("failed to retrieve following list")
 	}
 
 	var followeeIDs []string
@@ -356,7 +330,7 @@ func (r *UserRepository) GetFollowing(userID string) ([]*AuthUserAdminService.Us
 	var users []db.User
 	if len(followeeIDs) > 0 {
 		if err := r.db.Where("id IN (?) AND deleted_at IS NULL", followeeIDs).Find(&users).Error; err != nil {
-			return nil, fmt.Errorf("failed to retrieve followees: %v", err)
+			return nil, customerrors.ERR_FOLLOWING_LIST_FAILED, fmt.Errorf("failed to retrieve followees")
 		}
 	}
 
@@ -375,16 +349,16 @@ func (r *UserRepository) GetFollowing(userID string) ([]*AuthUserAdminService.Us
 			},
 		})
 	}
-	return profiles, nil
+	return profiles, "", nil
 }
 
-func (r *UserRepository) GetFollowers(userID string) ([]*AuthUserAdminService.UserProfile, error) {
+func (r *UserRepository) GetFollowers(userID string) ([]*AuthUserAdminService.UserProfile, string, error) {
 	if userID == "" {
-		return nil, errors.New("user ID cannot be empty")
+		return nil, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	var followers []db.Follower
 	if err := r.db.Where("followee_id = ?", userID).Find(&followers).Error; err != nil {
-		return nil, fmt.Errorf("failed to get followers: %v", err)
+		return nil, customerrors.ERR_FOLLOWERS_LIST_FAILED, fmt.Errorf("failed to retrieve followers")
 	}
 
 	var followerIDs []string
@@ -395,7 +369,7 @@ func (r *UserRepository) GetFollowers(userID string) ([]*AuthUserAdminService.Us
 	var users []db.User
 	if len(followerIDs) > 0 {
 		if err := r.db.Where("id IN (?) AND deleted_at IS NULL", followerIDs).Find(&users).Error; err != nil {
-			return nil, fmt.Errorf("failed to retrieve followers: %v", err)
+			return nil, customerrors.ERR_FOLLOWERS_LIST_FAILED, fmt.Errorf("failed to retrieve followers")
 		}
 	}
 
@@ -414,31 +388,31 @@ func (r *UserRepository) GetFollowers(userID string) ([]*AuthUserAdminService.Us
 			},
 		})
 	}
-	return profiles, nil
+	return profiles, "", nil
 }
 
-func (r *UserRepository) CreateUserAdmin(req *AuthUserAdminService.CreateUserAdminRequest) (string, error) {
+func (r *UserRepository) CreateUserAdmin(req *AuthUserAdminService.CreateUserAdminRequest) (string, string, error) {
 	if req == nil {
-		return "", errors.New("create admin request cannot be nil")
+		return "", customerrors.ERR_PARAM_EMPTY, fmt.Errorf("create admin request cannot be nil")
 	}
 	if req.Password != req.ConfirmPassword {
-		return "", errors.New("passwords do not match")
+		return "", customerrors.ERR_ADMIN_CREATE_PASSWORD_MISMATCH, fmt.Errorf("passwords do not match")
 	}
 	if !IsValidEmail(req.Email) {
-		return "", errors.New("invalid email format")
+		return "", customerrors.ERR_ADMIN_CREATE_INVALID_EMAIL, fmt.Errorf("invalid email format")
 	}
 	if !IsValidPassword(req.Password) {
-		return "", errors.New("password must be at least 8 characters, include an uppercase letter, and a digit")
+		return "", customerrors.ERR_ADMIN_CREATE_INVALID_PASSWORD, fmt.Errorf("invalid password format")
 	}
 
-	socials := &AuthUserAdminService.Socials{} // Default empty socials
+	socials := &AuthUserAdminService.Socials{}
 	if req.Socials != nil {
 		socials = req.Socials
 	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		return "", fmt.Errorf("failed to hash password: %v", err)
+		return "", customerrors.ERR_PASSWORD_HASH_FAILED, fmt.Errorf("failed to hash password")
 	}
 
 	user := db.User{
@@ -458,26 +432,24 @@ func (r *UserRepository) CreateUserAdmin(req *AuthUserAdminService.CreateUserAdm
 	}
 
 	if err := r.db.Create(&user).Error; err != nil {
-		return "", fmt.Errorf("failed to create admin user: %v", err)
+		return "", customerrors.ERR_ADMIN_CREATE_FAILED, fmt.Errorf("failed to create admin user")
 	}
 
-	return user.ID, nil
+	return user.ID, "", nil
 }
 
-func (r *UserRepository) UpdateUserAdmin(req *AuthUserAdminService.UpdateUserAdminRequest) error {
+func (r *UserRepository) UpdateUserAdmin(req *AuthUserAdminService.UpdateUserAdminRequest) (string, error) {
 	if req == nil {
-		return errors.New("update admin request cannot be nil")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("update admin request cannot be nil")
 	}
 	if req.UserID == "" {
-		return errors.New("user ID cannot be empty")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
-	if req.Password != "" {
-		if !IsValidPassword(req.Password) {
-			return errors.New("invalid password format: must be at least 8 characters, include an uppercase letter, and a digit")
-		}
+	if req.Password != "" && !IsValidPassword(req.Password) {
+		return customerrors.ERR_ADMIN_UPDATE_INVALID_PASSWORD, fmt.Errorf("invalid password format")
 	}
 
-	socials := &AuthUserAdminService.Socials{} // Default empty socials
+	socials := &AuthUserAdminService.Socials{}
 	if req.Socials != nil {
 		socials = req.Socials
 	}
@@ -499,20 +471,20 @@ func (r *UserRepository) UpdateUserAdmin(req *AuthUserAdminService.UpdateUserAdm
 	if req.Password != "" {
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 		if err != nil {
-			return fmt.Errorf("failed to hash password: %v", err)
+			return customerrors.ERR_PASSWORD_HASH_FAILED, fmt.Errorf("failed to hash password")
 		}
 		user.HashedPassword = string(hashedPassword)
 	}
 
 	if err := r.db.Model(&user).Where("id = ? AND deleted_at IS NULL", req.UserID).Updates(user).Error; err != nil {
-		return fmt.Errorf("failed to update admin user: %v", err)
+		return customerrors.ERR_ADMIN_UPDATE_FAILED, fmt.Errorf("failed to update admin user")
 	}
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) BanUser(userID, banReason string, banExpiry int64, banType string) error {
+func (r *UserRepository) BanUser(userID, banReason string, banExpiry int64, banType string) (string, error) {
 	if userID == "" {
-		return errors.New("user ID cannot be empty")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	uuid := uuid.New().String()
 	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).
@@ -520,7 +492,7 @@ func (r *UserRepository) BanUser(userID, banReason string, banExpiry int64, banT
 			"is_banned": true,
 			"ban_id":    uuid,
 		}).Error; err != nil {
-		return errors.New("Unable to process ban request. Please try again.")
+		return customerrors.ERR_BAN_USER_FAILED, fmt.Errorf("unable to ban user")
 	}
 
 	banHistory := db.BanHistory{
@@ -533,67 +505,67 @@ func (r *UserRepository) BanUser(userID, banReason string, banExpiry int64, banT
 	}
 
 	if err := r.db.Create(&banHistory).Error; err != nil {
-		return fmt.Errorf("failed to record ban history: %v", err)
+		return customerrors.ERR_BAN_USER_FAILED, fmt.Errorf("failed to record ban history")
 	}
 
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) UnbanUser(userID string) error {
+func (r *UserRepository) UnbanUser(userID string) (string, error) {
 	if userID == "" {
-		return errors.New("user ID cannot be empty")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).
 		Updates(map[string]interface{}{
 			"is_banned": false,
 		}).Error; err != nil {
-		return errors.New("Unable to unban user. Please try again.")
+		return customerrors.ERR_UNBAN_USER_FAILED, fmt.Errorf("unable to unban user")
 	}
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) VerifyAdminUser(userID string) error {
+func (r *UserRepository) VerifyAdminUser(userID string) (string, error) {
 	if userID == "" {
-		return errors.New("user ID cannot be empty")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).
 		Updates(map[string]interface{}{
 			"is_verified": true,
 			"updated_at":  time.Now().Unix(),
 		}).Error; err != nil {
-		return fmt.Errorf("failed to verify user: %v", err)
+		return customerrors.ERR_ADMIN_VERIFY_FAILED, fmt.Errorf("failed to verify user")
 	}
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) UnverifyUser(userID string) error {
+func (r *UserRepository) UnverifyUser(userID string) (string, error) {
 	if userID == "" {
-		return errors.New("user ID cannot be empty")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).
 		Updates(map[string]interface{}{
 			"is_verified": false,
 			"updated_at":  time.Now().Unix(),
 		}).Error; err != nil {
-		return fmt.Errorf("failed to unverify user: %v", err)
+		return customerrors.ERR_ADMIN_UNVERIFY_FAILED, fmt.Errorf("failed to unverify user")
 	}
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) SoftDeleteUserAdmin(userID string) error {
+func (r *UserRepository) SoftDeleteUserAdmin(userID string) (string, error) {
 	if userID == "" {
-		return errors.New("user ID cannot be empty")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).
 		Update("deleted_at", time.Now()).Error; err != nil {
-		return fmt.Errorf("failed to soft delete user: %v", err)
+		return customerrors.ERR_ADMIN_DELETE_FAILED, fmt.Errorf("failed to delete user")
 	}
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) GetAllUsers(req *AuthUserAdminService.GetAllUsersRequest) ([]*AuthUserAdminService.UserProfile, int32, error) {
+func (r *UserRepository) GetAllUsers(req *AuthUserAdminService.GetAllUsersRequest) ([]*AuthUserAdminService.UserProfile, int32, string, error) {
 	if req == nil {
-		return nil, 0, errors.New("get all users request cannot be nil")
+		return nil, 0, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("get all users request cannot be nil")
 	}
 	var users []db.User
 	query := r.db.Where("deleted_at IS NULL")
@@ -606,11 +578,11 @@ func (r *UserRepository) GetAllUsers(req *AuthUserAdminService.GetAllUsersReques
 
 	var totalCount int64
 	if err := query.Model(&db.User{}).Count(&totalCount).Error; err != nil {
-		return nil, 0, fmt.Errorf("failed to count users: %v", err)
+		return nil, 0, customerrors.ERR_USERS_LIST_FAILED, fmt.Errorf("failed to count users")
 	}
 
 	if err := query.Find(&users).Error; err != nil {
-		return nil, 0, fmt.Errorf("failed to retrieve users: %v", err)
+		return nil, 0, customerrors.ERR_USERS_LIST_FAILED, fmt.Errorf("failed to retrieve users")
 	}
 
 	var profiles []*AuthUserAdminService.UserProfile
@@ -628,81 +600,68 @@ func (r *UserRepository) GetAllUsers(req *AuthUserAdminService.GetAllUsersReques
 			},
 		})
 	}
-	return profiles, int32(totalCount), nil
+	return profiles, int32(totalCount), "", nil
 }
 
-func (r *UserRepository) ChangePassword(email, hashedPassword string) error {
-	if email == "" {
-		return errors.New("email cannot be empty")
-	}
-	if hashedPassword == "" {
-		return errors.New("password cannot be empty")
+func (r *UserRepository) ChangePassword(email, hashedPassword string) (string, error) {
+	if email == "" || hashedPassword == "" {
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("email or password cannot be empty")
 	}
 	if err := r.db.Model(&db.User{}).Where("email = ? AND deleted_at IS NULL", email).
 		Updates(map[string]interface{}{
 			"hashed_password": hashedPassword,
 			"updated_at":      time.Now().Unix(),
 		}).Error; err != nil {
-		return errors.New("Unable to update your password. Please try again later.")
+		return customerrors.ERR_PW_CHANGE_MISMATCH, fmt.Errorf("unable to update password")
 	}
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) IsUserVerified(userID string) (bool, error) {
+func (r *UserRepository) IsUserVerified(userID string) (bool, string, error) {
 	if userID == "" {
-		return false, errors.New("user ID cannot be empty")
+		return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	var user db.User
 	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return false, errors.New("user not found")
+			return false, customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("user not found")
 		}
-		return false, fmt.Errorf("failed to check verification status: %v", err)
+		return false, customerrors.ERR_CRED_CHECK_FAILED, fmt.Errorf("failed to check verification status")
 	}
-	return user.IsVerified, nil
+	return user.IsVerified, "", nil
 }
 
-func (r *UserRepository) IsAdmin(userID string) (bool, error) {
+func (r *UserRepository) IsAdmin(userID string) (bool, string, error) {
 	if userID == "" {
-		return false, errors.New("user ID cannot be empty")
+		return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	var user db.User
 	if err := r.db.Where("id = ? AND role = ? AND deleted_at IS NULL", userID, "ADMIN").First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return false, nil
+			return false, "", nil
 		}
-		return false, fmt.Errorf("failed to check admin status: %v", err)
+		return false, customerrors.ERR_CRED_CHECK_FAILED, fmt.Errorf("failed to check admin status")
 	}
-	return true, nil
+	return true, "", nil
 }
 
-func (r *UserRepository) GetUserFor2FA(userID string) (*db.User, error) {
+func (r *UserRepository) GetUserFor2FA(userID string) (*db.User, string, error) {
 	if userID == "" {
-		return nil, errors.New("user ID cannot be empty")
+		return nil, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	var user db.User
 	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return nil, errors.New("user not found")
+			return nil, customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("user not found")
 		}
-		return nil, fmt.Errorf("failed to retrieve user for 2FA: %v", err)
+		return nil, customerrors.ERR_CRED_CHECK_FAILED, fmt.Errorf("failed to retrieve user for 2FA")
 	}
-	return &user, nil
+	return &user, "", nil
 }
 
-// func (r *UserRepository) Update2FAStatus(userID string, TwoFactorAuth bool) error {
-// 	if userID == "" {
-// 		return errors.New("user ID cannot be empty")
-// 	}
-// 	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).Update("two_factor_enabled", TwoFactorAuth).Error; err != nil {
-// 		return fmt.Errorf("failed to update 2FA status: %v", err)
-// 	}
-// 	return nil
-// }
-
-func (r *UserRepository) CreateVerification(userID, email, token string) error {
+func (r *UserRepository) CreateVerification(userID, email, token string) (string, error) {
 	if userID == "" || email == "" || token == "" {
-		return errors.New("user ID, email, or token cannot be empty")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID, email, or token cannot be empty")
 	}
 	verification := db.Verification{
 		UserID:    userID,
@@ -713,68 +672,64 @@ func (r *UserRepository) CreateVerification(userID, email, token string) error {
 		Used:      false,
 	}
 	if err := r.db.Create(&verification).Error; err != nil {
-		return fmt.Errorf("failed to create verification record: %v", err)
+		return customerrors.ERR_TOKEN_CREATION_FAILED, fmt.Errorf("failed to create verification record")
 	}
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) VerifyUserToken(email, token string) (bool, error) {
+func (r *UserRepository) VerifyUserToken(email, token string) (bool, string, error) {
 	if email == "" || token == "" {
-		return false, errors.New("email or token cannot be empty")
+		return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("email or token cannot be empty")
 	}
 
 	var user db.User
 	if err := r.db.Where("email = ? AND deleted_at IS NULL", email).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return false, errors.New("Account not found. Please check your information and try again.")
+			return false, customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("account not found")
 		}
-		return false, errors.New("Unable to verify your account. Please try again.")
+		return false, customerrors.ERR_VERIFY_CHECK_FAILED, fmt.Errorf("unable to verify account")
 	}
 
 	if user.IsVerified {
-		return false, errors.New("The user already verified")
+		return false, customerrors.ERR_ALREADY_VERIFIED, fmt.Errorf("user already verified")
 	}
 
 	var verification db.Verification
 	if err := r.db.Where("email = ? AND token = ? AND expiry_at > ? AND used = ?", email, token, time.Now().Unix(), false).First(&verification).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return false, errors.New("Invalid or expired verification code. Please request a new one.")
+			return false, customerrors.ERR_VERIFY_TOKEN_INVALID, fmt.Errorf("invalid or expired verification code")
 		}
-		return false, errors.New("Unable to verify your account. Please try again.")
+		return false, customerrors.ERR_VERIFY_CHECK_FAILED, fmt.Errorf("unable to verify account")
 	}
 
 	if err := r.db.Model(&verification).Update("used", true).Error; err != nil {
-		return false, fmt.Errorf("failed to mark token as used: %v", err)
+		return false, customerrors.ERR_TOKEN_VERIFICATION_FAILED, fmt.Errorf("failed to mark token as used")
 	}
 	if err := r.db.Model(&db.User{}).Where("email = ?", email).Update("is_verified", true).Error; err != nil {
-		return false, fmt.Errorf("failed to update verification status: %v", err)
+		return false, customerrors.ERR_PROFILE_UPDATE_FAILED, fmt.Errorf("failed to update verification status")
 	}
-	return true, nil
+	return true, "", nil
 }
 
-func (r *UserRepository) ResendEmailVerification(email string) (string, int64, error) {
+func (r *UserRepository) ResendEmailVerification(email string) (string, int64, string, error) {
 	if email == "" {
-		return "", 0, errors.New("email cannot be empty")
+		return "", 0, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("email cannot be empty")
 	}
 	var user db.User
 	if err := r.db.Where("email = ? AND deleted_at IS NULL", email).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return "", 0, errors.New("Account not found. Please check your information and try again.")
+			return "", 0, customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("account not found")
 		}
-		return "", 0, errors.New("Unable to send verification code. Please try again later.")
+		return "", 0, customerrors.ERR_EMAIL_RESEND_FAILED, fmt.Errorf("unable to send verification code")
 	}
 
 	if user.IsVerified {
-		return "", 0, errors.New("The user already verified")
+		return "", 0, customerrors.ERR_ALREADY_VERIFIED, fmt.Errorf("user already verified")
 	}
 
 	var existingVerification db.Verification
 	if err := r.db.Where("user_id = ? AND expiry_at > ? AND used = ?", user.ID, time.Now().Unix(), false).First(&existingVerification).Error; err == nil {
-		return "", existingVerification.ExpiryAt, errors.New("A valid email verification already exists and is not expired.")
-	}
-
-	if existingVerification.ExpiryAt > time.Now().Unix() {
-		return "", existingVerification.ExpiryAt, errors.New("A valid email verification already exists and is not expired.")
+		return "", existingVerification.ExpiryAt, customerrors.ERR_VERIFICATION_ALREADY_EXISTS, fmt.Errorf("verification already exists")
 	}
 
 	otp := GenerateOTP(6)
@@ -788,30 +743,30 @@ func (r *UserRepository) ResendEmailVerification(email string) (string, int64, e
 		Used:      false,
 	}
 	if err := r.db.Create(&verification).Error; err != nil {
-		return "", 0, fmt.Errorf("failed to create new email verification: %v", err)
+		return "", 0, customerrors.ERR_TOKEN_CREATION_FAILED, fmt.Errorf("failed to create verification")
 	}
 
 	if err := r.SendVerificationEmail(user.Email, otp); err != nil {
 		log.Printf("Failed to send verification email: %v", err)
 	}
 
-	return otp, verification.ExpiryAt, nil
+	return otp, verification.ExpiryAt, "", nil
 }
 
-func (r *UserRepository) CreateForgotPasswordToken(email, token string) (string, error) {
+func (r *UserRepository) CreateForgotPasswordToken(email, token string) (string, string, error) {
 	if email == "" || token == "" {
-		return "", errors.New("email or token cannot be empty")
+		return "", customerrors.ERR_PARAM_EMPTY, fmt.Errorf("email or token cannot be empty")
 	}
 	var user db.User
 	if err := r.db.Where("email = ? AND deleted_at IS NULL", email).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return "", errors.New("user not found")
+			return "", customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("user not found")
 		}
-		return "", fmt.Errorf("failed to retrieve user: %v", err)
+		return "", customerrors.ERR_PW_FORGOT_INIT_FAILED, fmt.Errorf("failed to retrieve user")
 	}
 
 	if err := r.db.Where("user_id = ? AND expiry_at > ? AND used = ?", user.ID, time.Now().Unix(), false).Delete(&db.ForgotPassword{}).Error; err != nil {
-		return "", fmt.Errorf("failed to clear existing reset token: %v", err)
+		return "", customerrors.ERR_TOKEN_CREATION_FAILED, fmt.Errorf("failed to clear existing reset token")
 	}
 
 	forgot := db.ForgotPassword{
@@ -824,126 +779,116 @@ func (r *UserRepository) CreateForgotPasswordToken(email, token string) (string,
 		Used:      false,
 	}
 	if err := r.db.Create(&forgot).Error; err != nil {
-		return "", fmt.Errorf("failed to create reset token: %v", err)
+		return "", customerrors.ERR_TOKEN_CREATION_FAILED, fmt.Errorf("failed to create reset token")
 	}
 
-	if r.config.APPURL == "" {
-		log.Printf("APPURL not configured, skipping email send")
-	} else {
+	if r.config.APPURL != "" {
 		resetLink := fmt.Sprintf("http://localhost:5173/reset-password?token=%s&email=%s", token, user.Email)
-		fmt.Println("resetLink																																											", resetLink, "																																					")
 		if err := r.SendForgotPasswordEmail(user.Email, resetLink); err != nil {
 			log.Printf("Failed to send password reset email: %v", err)
 		}
 	}
 
-	return user.ID, nil
+	return user.ID, "", nil
 }
 
-func (r *UserRepository) VerifyForgotPasswordToken(userID, token string) (bool, error) {
+func (r *UserRepository) VerifyForgotPasswordToken(userID, token string) (bool, string, error) {
 	if userID == "" || token == "" {
-		return false, errors.New("user ID or token cannot be empty")
+		return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID or token cannot be empty")
 	}
 	var forgot db.ForgotPassword
 	if err := r.db.Where("user_id = ? AND token = ? AND expiry_at > ? AND used = ?", userID, token, time.Now().Unix(), false).First(&forgot).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return false, nil
+			return false, "", nil
 		}
-		return false, fmt.Errorf("failed to verify reset token: %v", err)
+		return false, customerrors.ERR_TOKEN_VERIFICATION_FAILED, fmt.Errorf("failed to verify reset token")
 	}
 
 	if err := r.db.Model(&forgot).Update("used", true).Error; err != nil {
-		return false, fmt.Errorf("failed to mark reset token as used: %v", err)
+		return false, customerrors.ERR_TOKEN_VERIFICATION_FAILED, fmt.Errorf("failed to mark reset token as used")
 	}
-	return true, nil
+	return true, "", nil
 }
 
-func (r *UserRepository) FinishForgotPassword(email, token, newPassword string) error {
-	// First get the user by email to get their ID
+func (r *UserRepository) FinishForgotPassword(email, token, newPassword string) (string, error) {
+	if email == "" || token == "" || newPassword == "" {
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("email, token, or new password cannot be empty")
+	}
+
 	var user db.User
 	if err := r.db.Where("email = ? AND deleted_at IS NULL", email).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return errors.New("no account found with this email address")
+			return customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("no account found")
 		}
-		return errors.New("unable to process password reset - please try again")
+		return customerrors.ERR_PW_RESET_MISMATCH, fmt.Errorf("unable to process password reset")
 	}
 
-	// Now check the forgot password token using the user's ID
 	var forgotPassword db.ForgotPassword
-	if err := r.db.Where("user_id = ? AND token = ? AND expiry_at > ? AND used = ?",
-		user.ID,
-		token,
-		time.Now().Unix(),
-		false).First(&forgotPassword).Error; err != nil {
+	if err := r.db.Where("user_id = ? AND token = ? AND expiry_at > ? AND used = ?", user.ID, token, time.Now().Unix(), false).First(&forgotPassword).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return errors.New("invalid or expired reset token - please request a new one")
+			return customerrors.ERR_VERIFY_TOKEN_INVALID, fmt.Errorf("invalid or expired reset token")
 		}
-		return errors.New("unable to verify reset token - please try again")
+		return customerrors.ERR_TOKEN_VERIFICATION_FAILED, fmt.Errorf("unable to verify reset token")
 	}
 
-	// Hash the new password
 	salt := uuid.New().String()
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(newPassword+salt), bcrypt.DefaultCost)
 	if err != nil {
-		return errors.New("unable to process new password - please try again")
+		return customerrors.ERR_PASSWORD_HASH_FAILED, fmt.Errorf("unable to process new password")
 	}
 
-	// Update the user's password within a transaction
 	tx := r.db.Begin()
 	if err := tx.Error; err != nil {
-		return errors.New("unable to process password reset - please try again")
+		return customerrors.ERR_PW_RESET_MISMATCH, fmt.Errorf("unable to process password reset")
 	}
 
-	// Update password and salt
 	if err := tx.Model(&user).Updates(map[string]interface{}{
 		"hashed_password": string(hashedPassword),
 		"salt":            salt,
 		"updated_at":      time.Now().Unix(),
 	}).Error; err != nil {
 		tx.Rollback()
-		return errors.New("unable to update password - please try again")
+		return customerrors.ERR_PW_RESET_MISMATCH, fmt.Errorf("unable to update password")
 	}
 
-	// Mark token as used
 	if err := tx.Model(&forgotPassword).Updates(map[string]interface{}{
 		"used": true,
 	}).Error; err != nil {
 		tx.Rollback()
-		return errors.New("unable to complete password reset - please try again")
+		return customerrors.ERR_PW_RESET_MISMATCH, fmt.Errorf("unable to complete password reset")
 	}
 
 	if err := tx.Commit().Error; err != nil {
-		return errors.New("unable to complete password reset - please try again")
+		return customerrors.ERR_PW_RESET_MISMATCH, fmt.Errorf("unable to complete password reset")
 	}
 
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) ChangeAuthenticatedPassword(userID, oldPassword, newPassword string) error {
+func (r *UserRepository) ChangeAuthenticatedPassword(userID, oldPassword, newPassword string) (string, error) {
 	if userID == "" || oldPassword == "" || newPassword == "" {
-		return errors.New("user ID, old password, or new password cannot be empty")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID, old password, or new password cannot be empty")
 	}
-	user, err := r.GetUserByUserID(userID)
+	user, _, err := r.GetUserByUserID(userID)
 	if err != nil {
-		return fmt.Errorf("failed to retrieve user: %v", err)
+		return customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("failed to retrieve user")
 	}
 
-	fmt.Println(user)
 	if user.HashedPassword == "" {
-		return errors.New("no existing password found for user")
+		return customerrors.ERR_NO_EXISTING_PASSWORD, fmt.Errorf("no existing password found")
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.HashedPassword), []byte(oldPassword+user.Salt)); err != nil {
-		return errors.New("invalid old password")
+		return customerrors.ERR_CRED_WRONG, fmt.Errorf("invalid old password")
 	}
 
 	if !IsValidPassword(newPassword) {
-		return errors.New("invalid password format: must be at least 8 characters, include an uppercase letter, and a digit")
+		return customerrors.ERR_PW_CHANGE_INVALID_PASSWORD, fmt.Errorf("invalid new password format")
 	}
 
 	hashedNewPassword, err := bcrypt.GenerateFromPassword([]byte(newPassword+user.Salt), bcrypt.DefaultCost)
 	if err != nil {
-		return fmt.Errorf("failed to hash password: %v", err)
+		return customerrors.ERR_PASSWORD_HASH_FAILED, fmt.Errorf("failed to hash password")
 	}
 
 	return r.ChangePassword(user.Email, string(hashedNewPassword))
@@ -952,21 +897,21 @@ func (r *UserRepository) ChangeAuthenticatedPassword(userID, oldPassword, newPas
 // Helper functions
 func (r *UserRepository) SendVerificationEmail(to, otp string) error {
 	if to == "" || otp == "" {
-		return errors.New("email or OTP cannot be empty")
+		return fmt.Errorf("email or OTP cannot be empty")
 	}
 	return utils.SendOTPEmail(to, "user", otp, 30)
 }
 
 func (r *UserRepository) SendForgotPasswordEmail(to, resetLink string) error {
 	if to == "" || resetLink == "" {
-		return errors.New("email or reset link cannot be empty")
+		return fmt.Errorf("email or reset link cannot be empty")
 	}
 	return utils.SendForgotPasswordEmail(to, resetLink)
 }
 
 func GenerateOTP(length int) string {
 	if length <= 0 {
-		length = 6 // Default length
+		length = 6
 	}
 	const chars = "0123456789"
 	result := make([]byte, length)
@@ -999,13 +944,13 @@ func IsValidPassword(password string) bool {
 	return hasUpper && hasDigit
 }
 
-func (r *UserRepository) GetBanHistory(userID string) ([]*AuthUserAdminService.BanHistory, error) {
+func (r *UserRepository) GetBanHistory(userID string) ([]*AuthUserAdminService.BanHistory, string, error) {
 	if userID == "" {
-		return nil, errors.New("user ID cannot be empty")
+		return nil, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	var bans []db.BanHistory
 	if err := r.db.Where("user_id = ?", userID).Find(&bans).Error; err != nil {
-		return nil, fmt.Errorf("failed to retrieve ban history: %v", err)
+		return nil, customerrors.ERR_BAN_HISTORY_FAILED, fmt.Errorf("failed to retrieve ban history")
 	}
 
 	var history []*AuthUserAdminService.BanHistory
@@ -1019,16 +964,14 @@ func (r *UserRepository) GetBanHistory(userID string) ([]*AuthUserAdminService.B
 			BanExpiry: ban.BanExpiry,
 		})
 	}
-	return history, nil
+	return history, "", nil
 }
 
-func (r *UserRepository) SearchUsers(query, pageToken string, limit int32) ([]*AuthUserAdminService.UserProfile, string, error) {
+func (r *UserRepository) SearchUsers(query, pageToken string, limit int32) ([]*AuthUserAdminService.UserProfile, string, string, error) {
 	var users []db.User
 	queryBuilder := r.db.Where("deleted_at IS NULL").Order("id ASC")
 
-	//check for base64encoded pagetoken
 	if pageToken != "" {
-		//decode pagetkn
 		decodedToken, err := base64.StdEncoding.DecodeString(pageToken)
 		if err != nil {
 			pageToken = ""
@@ -1045,7 +988,7 @@ func (r *UserRepository) SearchUsers(query, pageToken string, limit int32) ([]*A
 	}
 
 	if err := queryBuilder.Limit(int(limit) + 1).Find(&users).Error; err != nil {
-		return nil, "", fmt.Errorf("failed to retrieve users: %v", err)
+		return nil, "", customerrors.ERR_USERS_SEARCH_FAILED, fmt.Errorf("failed to retrieve users")
 	}
 
 	var profiles []*AuthUserAdminService.UserProfile
@@ -1077,42 +1020,42 @@ func (r *UserRepository) SearchUsers(query, pageToken string, limit int32) ([]*A
 		nextPageToken = base64.StdEncoding.EncodeToString([]byte(lastID))
 	}
 
-	return profiles, nextPageToken, nil
+	return profiles, nextPageToken, "", nil
 }
 
-func (r *UserRepository) LogoutUser(userID string) error {
+func (r *UserRepository) LogoutUser(userID string) (string, error) {
 	if userID == "" {
-		return errors.New("user ID cannot be empty")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 
 	var user db.User
 	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
-		return fmt.Errorf("failed to retrieve user: %v", err)
+		return customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("failed to retrieve user")
 	}
 
 	if !user.TwoFactorEnabled {
-		return nil
+		return "", nil
 	}
 
 	if err := r.db.Model(&user).Update("is_verified", false).Error; err != nil {
-		return fmt.Errorf("failed to toggle verification: %v", err)
+		return customerrors.ERR_PROFILE_UPDATE_FAILED, fmt.Errorf("failed to toggle verification")
 	}
 
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) SetUpTwoFactorAuth(userID string) (string, string, error) {
+func (r *UserRepository) SetUpTwoFactorAuth(userID string) (string, string, string, error) {
 	if userID == "" {
-		return "", "", errors.New("user ID cannot be empty")
+		return "", "", customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 
 	var user db.User
 	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
-		return "", "", fmt.Errorf("failed to retrieve user: %v", err)
+		return "", "", customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("failed to retrieve user")
 	}
 
 	if user.TwoFactorEnabled {
-		return "", "", errors.New("two factor authentication is already enabled")
+		return "", "", customerrors.ERR_2FA_ALREADY_ENABLED, fmt.Errorf("2FA already enabled")
 	}
 
 	key, err := totp.Generate(totp.GenerateOpts{
@@ -1120,7 +1063,7 @@ func (r *UserRepository) SetUpTwoFactorAuth(userID string) (string, string, erro
 		AccountName: user.Email,
 	})
 	if err != nil {
-		return "", "", fmt.Errorf("failed to generate TOTP key: %v", err)
+		return "", "", customerrors.ERR_2FA_SETUP_FAILED, fmt.Errorf("failed to generate TOTP key")
 	}
 
 	otpSecret := key.Secret()
@@ -1128,77 +1071,77 @@ func (r *UserRepository) SetUpTwoFactorAuth(userID string) (string, string, erro
 
 	qrCode, err := qrcode.New(otpURI, qrcode.Medium)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to generate QR code: %v", err)
+		return "", "", customerrors.ERR_2FA_SETUP_FAILED, fmt.Errorf("failed to generate QR code")
 	}
 
 	user.TwoFactorSecret = otpSecret
 	user.TwoFactorEnabled = true
-	
+
 	if err := r.db.Save(&user).Error; err != nil {
-		return "", "", fmt.Errorf("failed to save user: %v", err)
+		return "", "", customerrors.ERR_2FA_SETUP_FAILED, fmt.Errorf("failed to save user")
 	}
 
 	qrCodeImage := qrCode.Image(256)
-
 	var qrCodeImageBytes bytes.Buffer
 	if err := png.Encode(&qrCodeImageBytes, qrCodeImage); err != nil {
-		return "", "", fmt.Errorf("failed to encode QR code image: %v", err)
+		return "", "", customerrors.ERR_2FA_SETUP_FAILED, fmt.Errorf("failed to encode QR code")
 	}
 
 	qrCodeImageBase64 := base64.StdEncoding.EncodeToString(qrCodeImageBytes.Bytes())
-
-	return qrCodeImageBase64, otpSecret, nil
-
+	return qrCodeImageBase64, otpSecret, "", nil
 }
 
-func (r *UserRepository) DisableTwoFactorAuth(userID string) error {
+func (r *UserRepository) DisableTwoFactorAuth(userID string) (string, error) {
 	if userID == "" {
-		return errors.New("user ID cannot be empty")
+		return customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 
 	var user db.User
 	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
-		return fmt.Errorf("failed to retrieve user: %v", err)
+		return customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("failed to retrieve user")
 	}
 
 	if !user.TwoFactorEnabled {
-		return errors.New("two factor authentication is not enabled")
+		return customerrors.ERR_2FA_NOT_ENABLED, fmt.Errorf("2FA not enabled")
 	}
 
-	if err := r.db.Model(&user).Update("two_factor_enabled", false).Error; err != nil {
-		return fmt.Errorf("failed to disable two factor authentication: %v", err)
+	if err := r.db.Model(&user).Updates(map[string]interface{}{
+		"two_factor_enabled": false,
+		"two_factor_secret":  "",
+	}).Error; err != nil {
+		return customerrors.ERR_2FA_DISABLE_FAILED, fmt.Errorf("failed to disable 2FA")
 	}
 
-	return nil
+	return "", nil
 }
 
-func (r *UserRepository) GetTwoFactorAuthStatus(email string) (bool, error) {
+func (r *UserRepository) GetTwoFactorAuthStatus(email string) (bool, string, error) {
 	if email == "" {
-		return false, errors.New("email cannot be empty")
+		return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("email cannot be empty")
 	}
 
 	var user db.User
 	if err := r.db.Where("email = ? AND deleted_at IS NULL", email).First(&user).Error; err != nil {
-		return false, fmt.Errorf("failed to retrieve user: %v", err)
+		return false, customerrors.ERR_2FA_STATUS_CHECK_FAILED, fmt.Errorf("failed to retrieve user")
 	}
 
-	return user.TwoFactorEnabled, nil
+	return user.TwoFactorEnabled, "", nil
 }
 
-func (r *UserRepository) VerifyTwoFactorAuth(email, code string) (bool, error) {
+func (r *UserRepository) VerifyTwoFactorAuth(email, code string) (bool, string, error) {
 	if email == "" || code == "" {
-		return false, errors.New("email or code cannot be empty")
+		return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("email or code cannot be empty")
 	}
 
-	user, err := r.GetUserByEmail(email)
+	user, _, err := r.GetUserByEmail(email)
 	if err != nil {
-		return false, fmt.Errorf("failed to retrieve user: %v", err)
+		return false, customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("failed to retrieve user")
 	}
 
 	valid := totp.Validate(code, user.TwoFactorSecret)
 	if !valid {
-		return false, errors.New("invalid code")
+		return false, customerrors.ERR_2FA_CODE_INVALID, fmt.Errorf("invalid 2FA code")
 	}
 
-	return true, nil
+	return true, "", nil
 }
