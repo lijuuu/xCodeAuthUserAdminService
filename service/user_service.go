@@ -29,7 +29,6 @@ type AuthUserAdminService struct {
 
 // NewAuthUserAdminService initializes and returns a new AuthUserAdminService
 func NewAuthUserAdminService(repo *repository.UserRepository, config *configs.Config, jwtSecret string) *AuthUserAdminService {
-	fmt.Println(jwtSecret)
 	return &AuthUserAdminService{
 		repo:      repo,
 		config:    config,
@@ -94,6 +93,16 @@ func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdmin
 		return nil, status.Error(codes.InvalidArgument, "The password provided is incorrect. Please try again.")
 	}
 
+	isEnabled, err := s.repo.GetTwoFactorAuthStatus(user.Email)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "An error occurred while checking your two factor authentication status. Please try again.")
+	}
+	if isEnabled {
+		return nil, status.Error(codes.Unauthenticated, "Your account requires two-factor authentication. Please check your sent your code along with the login request")
+	}
+
+	
+
 	if !user.IsVerified {
 		return nil, status.Error(codes.Unauthenticated, "Your email address requires verification. Please check your inbox.")
 	}
@@ -106,12 +115,12 @@ func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdmin
 	// 	return nil, status.Error(codes.Unauthenticated, "Your account requires two-factor authentication. Please check your sent your code along with the login request")
 	// }
 
-	rtoken, _, err := utils.GenerateJWT(user.ID, "USER", s.jwtSecret, 30*24*time.Hour)
+	rtoken, _, err := utils.GenerateJWT(user.ID, "USER", s.jwtSecret, 7*24*time.Hour)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "An error occurred while generating your login token. Please try again.")
 	}
 
-	atoken, expiresIn, err := utils.GenerateJWT(user.ID, "USER", s.jwtSecret, 7*24*time.Hour)
+	atoken, expiresIn, err := utils.GenerateJWT(user.ID, "USER", s.jwtSecret, 1*24*time.Hour)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "An error occurred while generating your login token. Please try again.")
 	}
@@ -120,13 +129,13 @@ func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdmin
 
 	return &authUserAdminService.LoginUserResponse{
 		UserProfile: &authUserAdminService.UserProfile{
-			UserID:    user.ID,
-			FirstName: user.FirstName,
-			LastName:  user.LastName,
+			UserID:            user.ID,
+			FirstName:         user.FirstName,
+			LastName:          user.LastName,
 			Email:             user.Email,
 			Role:              user.Role,
-			IsVerified:        user.IsVerified,
-			IsBanned:          user.IsBanned,
+			// IsVerified:        user.IsVerified,
+			// IsBanned:          user.IsBanned,
 			PrimaryLanguageID: user.PrimaryLanguageID,
 			Country:           user.Country,
 			TwoFactorEnabled:  user.TwoFactorEnabled,
@@ -160,7 +169,7 @@ func (s *AuthUserAdminService) LoginAdmin(ctx context.Context, req *authUserAdmi
 		return nil, status.Error(codes.PermissionDenied, "This account does not have administrative privileges.")
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.HashedPassword), []byte(req.Password + user.Salt)); err != nil {
+	if err := bcrypt.CompareHashAndPassword([]byte(user.HashedPassword), []byte(req.Password+user.Salt)); err != nil {
 		return nil, status.Error(codes.Unauthenticated, "The admin password provided is incorrect. Please try again.")
 	}
 
@@ -168,16 +177,16 @@ func (s *AuthUserAdminService) LoginAdmin(ctx context.Context, req *authUserAdmi
 		return nil, status.Error(codes.Unauthenticated, "This admin account requires verification. Please contact support.")
 	}
 
-	atoken, expiresIn, err := utils.GenerateJWT(user.ID, "ADMIN", s.jwtSecret, 30*24*time.Hour)
+	atoken, expiresIn, err := utils.GenerateJWT(user.ID, "ADMIN", s.jwtSecret, 1*24*time.Hour)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "An error occurred while generating your admin token. Please try again.")
 	}
 
 	return &authUserAdminService.LoginAdminResponse{
-		AccessToken:  atoken,
-		ExpiresIn:    expiresIn,
-		AdminID:      user.ID,
-		Message:      "Admin login successful. Welcome back.",
+		AccessToken: atoken,
+		ExpiresIn:   expiresIn,
+		AdminID:     user.ID,
+		Message:     "Admin login successful. Welcome back.",
 	}, nil
 }
 
@@ -191,7 +200,7 @@ func (s *AuthUserAdminService) TokenRefresh(ctx context.Context, req *authUserAd
 		return nil, status.Error(codes.Unauthenticated, "Your session has expired. Please log in again.")
 	}
 
-	newToken, expiresIn, err := utils.GenerateJWT(claims.ID, claims.Role, s.jwtSecret, 7*24*time.Hour)
+	newToken, expiresIn, err := utils.GenerateJWT(claims.ID, claims.Role, s.jwtSecret, 1*24*time.Hour)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "An error occurred while refreshing your session. Please log in again.")
 	}
@@ -206,8 +215,6 @@ func (s *AuthUserAdminService) TokenRefresh(ctx context.Context, req *authUserAd
 // LogoutUser handles user logout (placeholder, as JWT is stateless)
 func (s *AuthUserAdminService) LogoutUser(ctx context.Context, req *authUserAdminService.LogoutRequest) (*authUserAdminService.LogoutResponse, error) {
 
-
-
 	return &authUserAdminService.LogoutResponse{
 		Message: "You have been logged out successfully.",
 	}, nil
@@ -215,13 +222,16 @@ func (s *AuthUserAdminService) LogoutUser(ctx context.Context, req *authUserAdmi
 
 // ResendOTP resends a verification OTP
 func (s *AuthUserAdminService) ResendEmailVerification(ctx context.Context, req *authUserAdminService.ResendEmailVerificationRequest) (*authUserAdminService.ResendEmailVerificationResponse, error) {
-	_, err := s.repo.ResendEmailVerification(req.Email)
+	_, expiryAt, err := s.repo.ResendEmailVerification(req.Email)
 	if err != nil {
-
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+		return &authUserAdminService.ResendEmailVerificationResponse{
+			Message:  "Something went wrong while sending the verification email. Please try again later.",
+			ExpiryAt: expiryAt,
+		}, status.Error(codes.InvalidArgument, err.Error())
 	}
 	return &authUserAdminService.ResendEmailVerificationResponse{
-		Message: "A new verification email has been sent to your email address.",
+		Message:  "A new verification email has been sent to your email address.",
+		ExpiryAt: expiryAt,
 	}, nil
 }
 
@@ -239,38 +249,38 @@ func (s *AuthUserAdminService) VerifyUser(ctx context.Context, req *authUserAdmi
 	}, nil
 }
 
-// SetTwoFactorAuth enables/disables 2FA
-func (s *AuthUserAdminService) ToggleTwoFactorAuth(ctx context.Context, req *authUserAdminService.ToggleTwoFactorAuthRequest) (*authUserAdminService.ToggleTwoFactorAuthResponse, error) {
-	user, err := s.repo.GetUserProfile(req.UserID)
-	if err != nil {
-		return nil, status.Error(codes.NotFound, "Your account could not be found. Please log in again.")
-	}
+// // SetTwoFactorAuth enables/disables 2FA
+// func (s *AuthUserAdminService) ToggleTwoFactorAuth(ctx context.Context, req *authUserAdminService.ToggleTwoFactorAuthRequest) (*authUserAdminService.ToggleTwoFactorAuthResponse, error) {
+// 	user, err := s.repo.GetUserProfile(req.UserID)
+// 	if err != nil {
+// 		return nil, status.Error(codes.NotFound, "Your account could not be found. Please log in again.")
+// 	}
 
-	if !user.UserProfile.IsVerified {
-		return nil, status.Error(codes.PermissionDenied, "Your account has not been verified. Please verify your account.")
-	}
+// 	if !user.UserProfile.IsVerified {
+// 		return nil, status.Error(codes.PermissionDenied, "Your account has not been verified. Please verify your account.")
+// 	}
 
-	valid, err := s.repo.CheckUserPassword(req.UserID, req.Password)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "An error occurred while verifying your password. Please try again.")
-	}
-	if !valid {
-		return nil, status.Error(codes.Unauthenticated, "The password provided is incorrect. Please try again.")
-	}
+// 	valid, err := s.repo.CheckUserPassword(req.UserID, req.Password)
+// 	if err != nil {
+// 		return nil, status.Error(codes.Internal, "An error occurred while verifying your password. Please try again.")
+// 	}
+// 	if !valid {
+// 		return nil, status.Error(codes.Unauthenticated, "The password provided is incorrect. Please try again.")
+// 	}
 
-	err = s.repo.Update2FAStatus(req.UserID, req.TwoFactorAuth)
-	if err != nil {
-		return nil, status.Error(codes.Internal, "An error occurred while updating two-factor authentication. Please try again.")
-	}
+// 	err = s.repo.Update2FAStatus(req.UserID, req.TwoFactorAuth)
+// 	if err != nil {
+// 		return nil, status.Error(codes.Internal, "An error occurred while updating two-factor authentication. Please try again.")
+// 	}
 
-	isEnabled := "enabled"
-	if !req.TwoFactorAuth {
-		isEnabled = "disabled"
-	}
-	return &authUserAdminService.ToggleTwoFactorAuthResponse{
-		Message: fmt.Sprintf("Two-factor authentication has been %s for your account.", isEnabled),
-	}, nil
-}
+// 	isEnabled := "enabled"
+// 	if !req.TwoFactorAuth {
+// 		isEnabled = "disabled"
+// 	}
+// 	return &authUserAdminService.ToggleTwoFactorAuthResponse{
+// 		Message: fmt.Sprintf("Two-factor authentication has been %s for your account.", isEnabled),
+// 	}, nil
+// }
 
 // ForgotPassword initiates password recovery
 func (s *AuthUserAdminService) ForgotPassword(ctx context.Context, req *authUserAdminService.ForgotPasswordRequest) (*authUserAdminService.ForgotPasswordResponse, error) {
@@ -572,8 +582,53 @@ func (s *AuthUserAdminService) SearchUsers(ctx context.Context, req *authUserAdm
 		return nil, status.Error(codes.Internal, "An error occurred while searching for users. Please try again.")
 	}
 	return &authUserAdminService.SearchUsersResponse{
-		Users:       users,
+		Users:         users,
 		NextPageToken: nextPageToken,
-		Message: "User search completed successfully.",
+		Message:       "User search completed successfully.",
 	}, nil
 }
+
+// rpc SetUpTwoFactorAuth(SetUpTwoFactorAuthRequest) returns (SetUpTwoFactorAuthResponse);
+// rpc DisableTwoFactorAuth(DisableTwoFactorAuthRequest) returns (DisableTwoFactorAuthResponse);
+// rpc GetTwoFactorAuthStatus(GetTwoFactorAuthStatusRequest) returns (GetTwoFactorAuthStatusResponse);
+
+func (s *AuthUserAdminService) SetUpTwoFactorAuth(ctx context.Context, req *authUserAdminService.SetUpTwoFactorAuthRequest) (*authUserAdminService.SetUpTwoFactorAuthResponse, error) {
+
+	qrCodeImage, otpSecret, err := s.repo.SetUpTwoFactorAuth(req.UserID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "An error occurred while setting up two factor authentication. Please try again.")
+	}
+	return &authUserAdminService.SetUpTwoFactorAuthResponse{
+		Message: "Two factor authentication setup successfully",
+		Image:   qrCodeImage,
+		Secret:  otpSecret,
+	}, nil
+}
+
+func (s *AuthUserAdminService) DisableTwoFactorAuth(ctx context.Context, req *authUserAdminService.DisableTwoFactorAuthRequest) (*authUserAdminService.DisableTwoFactorAuthResponse, error) {
+	user, err := s.repo.CheckUserPassword(req.UserID, req.Password)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "An error occurred while checking user credentials. Please try again.")
+	}
+	if !user {
+		return nil, status.Error(codes.PermissionDenied, "The provided password is incorrect.")
+	}
+	err = s.repo.DisableTwoFactorAuth(req.UserID)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "An error occurred while disabling two factor authentication. Please try again.")
+	}
+	return &authUserAdminService.DisableTwoFactorAuthResponse{
+		Message: "Two factor authentication has been disabled successfully",
+	}, nil
+}
+
+func (s *AuthUserAdminService) GetTwoFactorAuthStatus(ctx context.Context, req *authUserAdminService.GetTwoFactorAuthStatusRequest) (*authUserAdminService.GetTwoFactorAuthStatusResponse, error) {
+	isEnabled, err := s.repo.GetTwoFactorAuthStatus(req.Email)
+	if err != nil {
+		return nil, status.Error(codes.Internal, "An error occurred while retrieving two factor authentication status. Please try again.")
+	}
+	return &authUserAdminService.GetTwoFactorAuthStatusResponse{
+		IsEnabled: isEnabled,
+	}, nil
+}
+

@@ -9,7 +9,7 @@ import (
 // Claims matches the middleware Claims structure
 type Claims struct {
 	ID   string `json:"id"`
-	Role string `json:"role"`
+	Role string `json:"role"` 
 	jwt.RegisteredClaims
 }
 

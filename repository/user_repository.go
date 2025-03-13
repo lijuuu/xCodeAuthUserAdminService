@@ -1,9 +1,11 @@
 package repository
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"image/png"
 	"log"
 	"math/rand"
 	"strings"
@@ -16,6 +18,8 @@ import (
 
 	"github.com/google/uuid"
 	AuthUserAdminService "github.com/lijuuu/GlobalProtoXcode/AuthUserAdminService"
+	"github.com/pquerna/otp/totp"
+	"github.com/skip2/go-qrcode"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -269,8 +273,8 @@ func (r *UserRepository) CheckBanStatus(userID string) (*AuthUserAdminService.Ch
 		if err == gorm.ErrRecordNotFound {
 			// If no ban history found but user is marked as banned, fix the inconsistency
 			if err := r.db.Model(&user).Updates(map[string]interface{}{
-				"is_banned":      false,
-				"ban_id":         nil,
+				"is_banned": false,
+				"ban_id":    nil,
 			}).Error; err != nil {
 				return nil, errors.New("unable to update user ban status")
 			}
@@ -286,8 +290,8 @@ func (r *UserRepository) CheckBanStatus(userID string) (*AuthUserAdminService.Ch
 	if banHistory.BanExpiry != 0 && banHistory.BanExpiry < time.Now().Unix() {
 		// Ban has expired, update user status
 		if err := r.db.Model(&user).Updates(map[string]interface{}{
-			"is_banned":      false,
-			"ban_id":         nil,
+			"is_banned": false,
+			"ban_id":    nil,
 		}).Error; err != nil {
 			return nil, errors.New("unable to update expired ban status")
 		}
@@ -514,7 +518,7 @@ func (r *UserRepository) BanUser(userID, banReason string, banExpiry int64, banT
 	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).
 		Updates(map[string]interface{}{
 			"is_banned": true,
-			"ban_id":   uuid,
+			"ban_id":    uuid,
 		}).Error; err != nil {
 		return errors.New("Unable to process ban request. Please try again.")
 	}
@@ -686,15 +690,15 @@ func (r *UserRepository) GetUserFor2FA(userID string) (*db.User, error) {
 	return &user, nil
 }
 
-func (r *UserRepository) Update2FAStatus(userID string, TwoFactorAuth bool) error {
-	if userID == "" {
-		return errors.New("user ID cannot be empty")
-	}
-	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).Update("two_factor_enabled", TwoFactorAuth).Error; err != nil {
-		return fmt.Errorf("failed to update 2FA status: %v", err)
-	}
-	return nil
-}
+// func (r *UserRepository) Update2FAStatus(userID string, TwoFactorAuth bool) error {
+// 	if userID == "" {
+// 		return errors.New("user ID cannot be empty")
+// 	}
+// 	if err := r.db.Model(&db.User{}).Where("id = ? AND deleted_at IS NULL", userID).Update("two_factor_enabled", TwoFactorAuth).Error; err != nil {
+// 		return fmt.Errorf("failed to update 2FA status: %v", err)
+// 	}
+// 	return nil
+// }
 
 func (r *UserRepository) CreateVerification(userID, email, token string) error {
 	if userID == "" || email == "" || token == "" {
@@ -748,29 +752,29 @@ func (r *UserRepository) VerifyUserToken(email, token string) (bool, error) {
 	return true, nil
 }
 
-func (r *UserRepository) ResendEmailVerification(email string) (string, error) {
+func (r *UserRepository) ResendEmailVerification(email string) (string, int64, error) {
 	if email == "" {
-		return "", errors.New("email cannot be empty")
+		return "", 0, errors.New("email cannot be empty")
 	}
 	var user db.User
 	if err := r.db.Where("email = ? AND deleted_at IS NULL", email).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return "", errors.New("Account not found. Please check your information and try again.")
+			return "", 0, errors.New("Account not found. Please check your information and try again.")
 		}
-		return "", errors.New("Unable to send verification code. Please try again later.")
+		return "", 0, errors.New("Unable to send verification code. Please try again later.")
 	}
 
 	if user.IsVerified {
-		return "", errors.New("The user already verified")
+		return "", 0, errors.New("The user already verified")
 	}
 
 	var existingVerification db.Verification
 	if err := r.db.Where("user_id = ? AND expiry_at > ? AND used = ?", user.ID, time.Now().Unix(), false).First(&existingVerification).Error; err == nil {
-		return "", errors.New("A valid email verification already exists and is not expired.")
+		return "", existingVerification.ExpiryAt, errors.New("A valid email verification already exists and is not expired.")
 	}
 
 	if existingVerification.ExpiryAt > time.Now().Unix() {
-		return "", errors.New("A valid email verification already exists and is not expired.")
+		return "", existingVerification.ExpiryAt, errors.New("A valid email verification already exists and is not expired.")
 	}
 
 	otp := GenerateOTP(6)
@@ -780,18 +784,18 @@ func (r *UserRepository) ResendEmailVerification(email string) (string, error) {
 		Email:     user.Email,
 		Token:     otp,
 		CreatedAt: time.Now().Unix(),
-		ExpiryAt:  time.Now().Add(30 * time.Minute).Unix(),
+		ExpiryAt:  time.Now().Add(1 * time.Minute).Unix(),
 		Used:      false,
 	}
 	if err := r.db.Create(&verification).Error; err != nil {
-		return "", fmt.Errorf("failed to create new email verification: %v", err)
+		return "", 0, fmt.Errorf("failed to create new email verification: %v", err)
 	}
 
 	if err := r.SendVerificationEmail(user.Email, otp); err != nil {
 		log.Printf("Failed to send verification email: %v", err)
 	}
 
-	return otp, nil
+	return otp, verification.ExpiryAt, nil
 }
 
 func (r *UserRepository) CreateForgotPasswordToken(email, token string) (string, error) {
@@ -826,8 +830,8 @@ func (r *UserRepository) CreateForgotPasswordToken(email, token string) (string,
 	if r.config.APPURL == "" {
 		log.Printf("APPURL not configured, skipping email send")
 	} else {
-		resetLink := fmt.Sprintf("%s/api/v1/auth/password/reset?token=%s", r.config.APPURL, token)
-		fmt.Println(resetLink)
+		resetLink := fmt.Sprintf("http://localhost:5173/reset-password?token=%s&email=%s", token, user.Email)
+		fmt.Println("resetLink																																											", resetLink, "																																					")
 		if err := r.SendForgotPasswordEmail(user.Email, resetLink); err != nil {
 			log.Printf("Failed to send password reset email: %v", err)
 		}
@@ -1095,4 +1099,106 @@ func (r *UserRepository) LogoutUser(userID string) error {
 	}
 
 	return nil
+}
+
+func (r *UserRepository) SetUpTwoFactorAuth(userID string) (string, string, error) {
+	if userID == "" {
+		return "", "", errors.New("user ID cannot be empty")
+	}
+
+	var user db.User
+	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
+		return "", "", fmt.Errorf("failed to retrieve user: %v", err)
+	}
+
+	if user.TwoFactorEnabled {
+		return "", "", errors.New("two factor authentication is already enabled")
+	}
+
+	key, err := totp.Generate(totp.GenerateOpts{
+		Issuer:      "XcodePlatform",
+		AccountName: user.Email,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("failed to generate TOTP key: %v", err)
+	}
+
+	otpSecret := key.Secret()
+	otpURI := key.String()
+
+	qrCode, err := qrcode.New(otpURI, qrcode.Medium)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to generate QR code: %v", err)
+	}
+
+	user.TwoFactorSecret = otpSecret
+	user.TwoFactorEnabled = true
+	
+	if err := r.db.Save(&user).Error; err != nil {
+		return "", "", fmt.Errorf("failed to save user: %v", err)
+	}
+
+	qrCodeImage := qrCode.Image(256)
+
+	var qrCodeImageBytes bytes.Buffer
+	if err := png.Encode(&qrCodeImageBytes, qrCodeImage); err != nil {
+		return "", "", fmt.Errorf("failed to encode QR code image: %v", err)
+	}
+
+	qrCodeImageBase64 := base64.StdEncoding.EncodeToString(qrCodeImageBytes.Bytes())
+
+	return qrCodeImageBase64, otpSecret, nil
+
+}
+
+func (r *UserRepository) DisableTwoFactorAuth(userID string) error {
+	if userID == "" {
+		return errors.New("user ID cannot be empty")
+	}
+
+	var user db.User
+	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
+		return fmt.Errorf("failed to retrieve user: %v", err)
+	}
+
+	if !user.TwoFactorEnabled {
+		return errors.New("two factor authentication is not enabled")
+	}
+
+	if err := r.db.Model(&user).Update("two_factor_enabled", false).Error; err != nil {
+		return fmt.Errorf("failed to disable two factor authentication: %v", err)
+	}
+
+	return nil
+}
+
+func (r *UserRepository) GetTwoFactorAuthStatus(email string) (bool, error) {
+	if email == "" {
+		return false, errors.New("email cannot be empty")
+	}
+
+	var user db.User
+	if err := r.db.Where("email = ? AND deleted_at IS NULL", email).First(&user).Error; err != nil {
+		return false, fmt.Errorf("failed to retrieve user: %v", err)
+	}
+
+	return user.TwoFactorEnabled, nil
+}
+
+func (r *UserRepository) VerifyTwoFactorAuth(email, code string) (bool, error) {
+	if email == "" || code == "" {
+		return false, errors.New("email or code cannot be empty")
+	}
+
+	user, err := r.GetUserByEmail(email)
+	if err != nil {
+		return false, fmt.Errorf("failed to retrieve user: %v", err)
+	}
+
+	valid := totp.Validate(code, user.TwoFactorSecret)
+	if !valid {
+		return false, errors.New("invalid code")
+	}
+
+	return true, nil
 }

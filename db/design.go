@@ -22,6 +22,7 @@ type User struct {
 	BanID             string         `gorm:"type:varchar(255)" json:"ban_id"`
 	TwoFactorEnabled  bool           `gorm:"default:false;not null" json:"two_factor_enabled"`
 	IsVerified        bool           `gorm:"default:false;not null" json:"is_verified"`
+	TwoFactorSecret   string         `gorm:"type:varchar(255)" json:"two_factor_secret"`
 	AvatarData        string         `gorm:"type:text" json:"avatar_data"`
 	Github            string         `gorm:"type:varchar(255)" json:"github"`
 	Twitter           string         `gorm:"type:varchar(255)" json:"twitter"`
@@ -76,7 +77,7 @@ type BanHistory struct {
 	BanExpiry int64  `gorm:"type:bigint;not null" json:"ban_expiry"`
 }
 
-type Admin struct {
+type Admin struct { 
 	ID        string `gorm:"primaryKey;type:uuid;not null" json:"id"`
 	Email     string `gorm:"type:varchar(255);not null;index" json:"email"`
 	FirstName string `gorm:"type:varchar(255);not null" json:"first_name"`
