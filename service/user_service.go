@@ -238,7 +238,7 @@ func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdmin
 	}
 
 	if isEnabled {
-		valid, errorType, err := s.repo.VerifyTwoFactorAuth(user.Email, req.TwoFactorCode)
+		valid, errorType, err := s.repo.ValidateTwoFactorAuth(user.Email, req.TwoFactorCode)
 		if err != nil {
 			return nil, s.createGrpcError(codes.NotFound, "An error occurred while verifying OTP", errorType, err)
 		}
@@ -694,6 +694,21 @@ func (s *AuthUserAdminService) SetUpTwoFactorAuth(ctx context.Context, req *auth
 		Message: "Two factor authentication setup successfully",
 		Image:   qrCodeImage,
 		Secret:  otpSecret,
+	}, nil
+}
+
+func (s *AuthUserAdminService) VerifyTwoFactorAuth(ctx context.Context, req *authUserAdminService.VerifyTwoFactorAuthRequest) (*authUserAdminService.VerifyTwoFactorAuthResponse, error) {
+	done, errorType, err := s.repo.VerifyTwoFactorAuth(req.UserID, req.TwoFactorCode)
+	if err != nil {
+			return nil, s.createGrpcError(codes.NotFound, "An error occurred while verifying two factor authentication", errorType, err)
+	}
+	if !done {
+			return nil, s.createGrpcError(codes.InvalidArgument, "Invalid two factor authentication code", customerrors.ERR_2FA_VERIFY_INVALID, nil)
+	}
+	
+	return &authUserAdminService.VerifyTwoFactorAuthResponse{
+			Message: "Two factor authentication verified successfully",
+			Verified: true,
 	}, nil
 }
 

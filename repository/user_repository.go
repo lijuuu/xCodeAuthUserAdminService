@@ -1082,7 +1082,7 @@ func (r *UserRepository) SetUpTwoFactorAuth(userID string) (string, string, stri
 	}
 
 	user.TwoFactorSecret = otpSecret
-	user.TwoFactorEnabled = true
+	// user.TwoFactorEnabled = true
 
 	if err := r.db.Save(&user).Error; err != nil {
 		return "", "", customerrors.ERR_2FA_SETUP_FAILED, fmt.Errorf("failed to save user")
@@ -1132,15 +1132,19 @@ func (r *UserRepository) GetTwoFactorAuthStatus(email string) (bool, string, err
 		return false, customerrors.ERR_2FA_STATUS_CHECK_FAILED, fmt.Errorf("failed to retrieve user")
 	}
 
+	if user.AuthType != "email"{
+		return false,customerrors.ERR_GOOGLELOGIN_NO2FA,fmt.Errorf("two factor cannot be enabled on oauth")
+	}
+
 	return user.TwoFactorEnabled, "", nil
 }
 
-func (r *UserRepository) VerifyTwoFactorAuth(email, code string) (bool, string, error) {
-	if email == "" || code == "" {
-		return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("email or code cannot be empty")
+func (r *UserRepository) ValidateTwoFactorAuth(userID, code string) (bool, string, error) {
+	if userID == "" || code == "" {
+		return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("userID or code cannot be empty")
 	}
 
-	user, _, err := r.GetUserByEmail(email)
+	user, _, err := r.GetUserByUserID(userID)
 	if err != nil {
 		return false, customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("failed to retrieve user")
 	}
@@ -1148,6 +1152,31 @@ func (r *UserRepository) VerifyTwoFactorAuth(email, code string) (bool, string, 
 	valid := totp.Validate(code, user.TwoFactorSecret)
 	if !valid {
 		return false, customerrors.ERR_2FA_CODE_INVALID, fmt.Errorf("invalid 2FA code")
+	}
+
+	return true, "", nil
+}
+
+func (r *UserRepository) VerifyTwoFactorAuth(userID, code string) (bool, string, error) {
+	if userID == "" || code == "" {
+			return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("userID or code cannot be empty")
+	}
+
+	user, _, err := r.GetUserByUserID(userID)
+	if err != nil {
+			return false, customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("failed to retrieve user")
+	}
+
+	valid := totp.Validate(code, user.TwoFactorSecret)
+	if !valid {
+			return false, customerrors.ERR_2FA_CODE_INVALID, fmt.Errorf("invalid 2FA code")
+	}
+
+	//toggle TwoFactorEnabled to true after successful validation
+	if err := r.db.Model(&user).Updates(map[string]interface{}{
+			"two_factor_enabled": true,
+	}).Error; err != nil {
+			return false, customerrors.ERR_2FA_SETUP_FAILED, fmt.Errorf("failed to enable 2FA")
 	}
 
 	return true, "", nil

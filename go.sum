@@ -35,6 +35,10 @@ github.com/lijuuu/GlobalProtoXcode v0.0.0-20250410125041-8f4401942471 h1:2dk5+j4
 github.com/lijuuu/GlobalProtoXcode v0.0.0-20250410125041-8f4401942471/go.mod h1:Tt/SSoiRXSrQ+uVdaJrJsI5rWicuZcRDFOsrybrvclA=
 github.com/lijuuu/GlobalProtoXcode v0.0.0-20250411040829-023f18cfaa8f h1:+Si3gzB0IRgrFhuYtJTBOFM0Z8VcmInQ4tucE+RLEHA=
 github.com/lijuuu/GlobalProtoXcode v0.0.0-20250411040829-023f18cfaa8f/go.mod h1:Tt/SSoiRXSrQ+uVdaJrJsI5rWicuZcRDFOsrybrvclA=
+github.com/lijuuu/GlobalProtoXcode v0.0.0-20250411120431-b54c587054f0 h1:912gtfUrAJVcjyWjZQBBkSZrdnqVsAlWSmdvWz6qD3k=
+github.com/lijuuu/GlobalProtoXcode v0.0.0-20250411120431-b54c587054f0/go.mod h1:Tt/SSoiRXSrQ+uVdaJrJsI5rWicuZcRDFOsrybrvclA=
+github.com/lijuuu/GlobalProtoXcode v0.0.0-20250411121514-fce403a0838d h1:gSweF2EfGl23n5An4+h2ipf8tAzm9EZuahers8yF25s=
+github.com/lijuuu/GlobalProtoXcode v0.0.0-20250411121514-fce403a0838d/go.mod h1:Tt/SSoiRXSrQ+uVdaJrJsI5rWicuZcRDFOsrybrvclA=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/pquerna/otp v1.4.0 h1:wZvl1TIVxKRThZIBiwOOHOGP/1+nZyWBil9Y2XNEDzg=
