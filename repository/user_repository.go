@@ -77,6 +77,13 @@ func (r *UserRepository) CreateUser(req *AuthUserAdminService.RegisterUserReques
 	return user.ID, "", nil
 }
 
+func (r *UserRepository)CreateGoogleUser(req *db.User)(string,string,error){
+	if err := r.db.Create(&req).Error; err != nil {
+		return "", customerrors.ERR_REG_CREATION_FAILED, fmt.Errorf("failed to create user")
+	}
+	return "", "", nil
+}
+
 func (r *UserRepository) CheckUserPassword(userID, password string) (bool, string, error) {
 	if userID == "" {
 		return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")

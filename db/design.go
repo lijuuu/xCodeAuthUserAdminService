@@ -36,6 +36,8 @@ type User struct {
 	Followers         []Follower     `gorm:"foreignKey:FolloweeID" json:"followers"`
 }
 
+//
+
 type Following struct {
 	FollowerID string `gorm:"primaryKey;type:uuid;index" json:"follower_id"`
 	FolloweeID string `gorm:"primaryKey;type:uuid;index" json:"followee_id"`

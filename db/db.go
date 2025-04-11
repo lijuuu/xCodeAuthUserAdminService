@@ -23,8 +23,8 @@ func InitDB(dsn string) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	sqlDB.SetMaxOpenConns(100) // Adjust based on load
-	sqlDB.SetMaxIdleConns(10)
+	// sqlDB.SetMaxOpenConns(10000) 
+	// sqlDB.SetMaxIdleConns(10)
 	sqlDB.SetConnMaxLifetime(time.Hour)
 
 	// Auto-migrate the schema
