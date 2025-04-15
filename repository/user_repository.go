@@ -77,7 +77,7 @@ func (r *UserRepository) CreateUser(req *AuthUserAdminService.RegisterUserReques
 	return user.ID, "", nil
 }
 
-func (r *UserRepository)CreateGoogleUser(req *db.User)(string,string,error){
+func (r *UserRepository) CreateGoogleUser(req *db.User) (string, string, error) {
 	if err := r.db.Create(&req).Error; err != nil {
 		return "", customerrors.ERR_REG_CREATION_FAILED, fmt.Errorf("failed to create user")
 	}
@@ -168,6 +168,8 @@ func (r *UserRepository) UpdateProfile(req *AuthUserAdminService.UpdateProfileRe
 		FirstName:         req.FirstName,
 		LastName:          req.LastName,
 		Country:           req.Country,
+		UserName:          req.UserName,
+		Bio:               req.Bio,
 		PrimaryLanguageID: req.PrimaryLanguageID,
 		MuteNotifications: req.MuteNotifications,
 		Github:            socials.Github,
@@ -175,6 +177,7 @@ func (r *UserRepository) UpdateProfile(req *AuthUserAdminService.UpdateProfileRe
 		Linkedin:          socials.Linkedin,
 		UpdatedAt:         time.Now().Unix(),
 	}
+	// fmt.Println("before udpate ",user)
 	if err := r.db.Model(&user).Where("id = ? AND deleted_at IS NULL", req.UserID).Updates(user).Error; err != nil {
 		return customerrors.ERR_PROFILE_UPDATE_FAILED, fmt.Errorf("unable to update profile")
 	}
@@ -210,6 +213,8 @@ func (r *UserRepository) GetUserProfile(userID string) (*AuthUserAdminService.Ge
 		return nil, customerrors.ERR_CRED_CHECK_FAILED, fmt.Errorf("unable to retrieve profile")
 	}
 
+	// fmt.Println(user)
+
 	return &AuthUserAdminService.GetUserProfileResponse{
 		UserProfile: &AuthUserAdminService.UserProfile{
 			UserID:            user.ID,
@@ -219,6 +224,7 @@ func (r *UserRepository) GetUserProfile(userID string) (*AuthUserAdminService.Ge
 			AvatarData:        user.AvatarData,
 			Email:             user.Email,
 			Role:              user.Role,
+			Bio:               user.Bio,
 			Country:           user.Country,
 			IsBanned:          user.IsBanned,
 			IsVerified:        user.IsVerified,
@@ -1009,6 +1015,7 @@ func (r *UserRepository) SearchUsers(query, pageToken string, limit int32) ([]*A
 			Email:             u.Email,
 			Role:              u.Role,
 			Country:           u.Country,
+			Bio:               u.Bio,
 			IsBanned:          u.IsBanned,
 			PrimaryLanguageID: u.PrimaryLanguageID,
 			Socials: &AuthUserAdminService.Socials{
@@ -1132,8 +1139,8 @@ func (r *UserRepository) GetTwoFactorAuthStatus(email string) (bool, string, err
 		return false, customerrors.ERR_2FA_STATUS_CHECK_FAILED, fmt.Errorf("failed to retrieve user")
 	}
 
-	if user.AuthType != "email"{
-		return false,customerrors.ERR_GOOGLELOGIN_NO2FA,fmt.Errorf("two factor cannot be enabled on oauth")
+	if user.AuthType != "email" {
+		return false, customerrors.ERR_GOOGLELOGIN_NO2FA, fmt.Errorf("two factor cannot be enabled on oauth")
 	}
 
 	return user.TwoFactorEnabled, "", nil
@@ -1159,25 +1166,36 @@ func (r *UserRepository) ValidateTwoFactorAuth(userID, code string) (bool, strin
 
 func (r *UserRepository) VerifyTwoFactorAuth(userID, code string) (bool, string, error) {
 	if userID == "" || code == "" {
-			return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("userID or code cannot be empty")
+		return false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("userID or code cannot be empty")
 	}
 
 	user, _, err := r.GetUserByUserID(userID)
 	if err != nil {
-			return false, customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("failed to retrieve user")
+		return false, customerrors.ERR_USER_NOT_FOUND, fmt.Errorf("failed to retrieve user")
 	}
 
 	valid := totp.Validate(code, user.TwoFactorSecret)
 	if !valid {
-			return false, customerrors.ERR_2FA_CODE_INVALID, fmt.Errorf("invalid 2FA code")
+		return false, customerrors.ERR_2FA_CODE_INVALID, fmt.Errorf("invalid 2FA code")
 	}
 
 	//toggle TwoFactorEnabled to true after successful validation
 	if err := r.db.Model(&user).Updates(map[string]interface{}{
-			"two_factor_enabled": true,
+		"two_factor_enabled": true,
 	}).Error; err != nil {
-			return false, customerrors.ERR_2FA_SETUP_FAILED, fmt.Errorf("failed to enable 2FA")
+		return false, customerrors.ERR_2FA_SETUP_FAILED, fmt.Errorf("failed to enable 2FA")
 	}
 
 	return true, "", nil
+}
+
+func (r *UserRepository) UserAvailable(username string) bool {
+	var user db.User
+	err := r.db.Where("user_name = ? AND deleted_at IS NULL", strings.ToLower(username)).First(&user).Error
+
+	fmt.Println("err in usernameavailabel check", err)
+
+	//if record is not found, username is available (return false)
+	//if record is found, username is taken (return true)
+	return err == gorm.ErrRecordNotFound
 }

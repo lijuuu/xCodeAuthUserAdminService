@@ -3,10 +3,11 @@ module xcode
 go 1.24.1
 
 require (
+	github.com/go-redis/redis/v8 v8.11.5
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/google/uuid v1.6.0
 	github.com/joho/godotenv v1.5.1
-	github.com/lijuuu/GlobalProtoXcode v0.0.0-20250411121514-fce403a0838d
+	github.com/lijuuu/GlobalProtoXcode v0.0.0-20250415050907-cdd69034720f
 	github.com/pquerna/otp v1.4.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	golang.org/x/crypto v0.30.0
@@ -19,6 +20,8 @@ require (
 require (
 	cloud.google.com/go/compute/metadata v0.5.2 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
 	github.com/jackc/pgx/v5 v5.5.5 // indirect

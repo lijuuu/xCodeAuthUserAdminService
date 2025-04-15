@@ -23,6 +23,7 @@ type Config struct {
 	GoogleClientID     string
 	GoogleClientSecret string
 	GoogleRedirectURL  string
+	RedisURL           string
 }
 
 // LoadConfig loads configuration from environment variables
@@ -46,7 +47,7 @@ func LoadConfig() Config {
 		GoogleClientID:     getEnv("GOOGLECLIENTID", ""),
 		GoogleClientSecret: getEnv("GOOGLECLIENTSECRET", ""),
 		GoogleRedirectURL:  getEnv("GOOGLEREDIRECTURL", ""),
-
+		RedisURL:           getEnv("REDISURL", "localhost:6379"),
 	}
 
 	// fmt.Println(config)

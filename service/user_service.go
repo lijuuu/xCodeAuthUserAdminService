@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
+	"xcode/cache"
 	"xcode/db"
 	"xcode/repository"
 	"xcode/utils"
@@ -25,17 +27,18 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// AuthUserAdminService implements the AuthUserAdminServiceServer interface
+// authuseradminservice implements the authuseradminserviceserver interface
 type AuthUserAdminService struct {
 	repo      *repository.UserRepository
+	cache     cache.RedisCache
 	config    *configs.Config
 	jwtSecret string
 	googleCfg *oauth2.Config
 	authUserAdminService.UnimplementedAuthUserAdminServiceServer
 }
 
-// NewAuthUserAdminService initializes and returns a new AuthUserAdminService
-func NewAuthUserAdminService(repo *repository.UserRepository, config *configs.Config, jwtSecret string) *AuthUserAdminService {
+// newauthuseradminservice initializes and returns a new authuseradminservice
+func NewAuthUserAdminService(repo *repository.UserRepository, cache cache.RedisCache, config *configs.Config, jwtSecret string) *AuthUserAdminService {
 	googleCfg := &oauth2.Config{
 		ClientID:     config.GoogleClientID,
 		ClientSecret: config.GoogleClientSecret,
@@ -45,13 +48,14 @@ func NewAuthUserAdminService(repo *repository.UserRepository, config *configs.Co
 	}
 	return &AuthUserAdminService{
 		repo:      repo,
+		cache:     cache,
 		config:    config,
 		jwtSecret: jwtSecret,
 		googleCfg: googleCfg,
 	}
 }
 
-// createGrpcError constructs a gRPC error with structured message
+// creategrpcerror constructs a grpc error with structured message
 func (s *AuthUserAdminService) createGrpcError(code codes.Code, message string, errorType string, cause error) error {
 	var details string
 	if cause != nil {
@@ -59,12 +63,11 @@ func (s *AuthUserAdminService) createGrpcError(code codes.Code, message string, 
 	} else {
 		details = message
 	}
-	// Format: "ErrorType: <type>, Code: <code>, Details: <details>"
 	errorMessage := fmt.Sprintf("ErrorType: %s, Code: %d, Details: %s", errorType, code, details)
 	return status.Error(code, errorMessage)
 }
 
-// RegisterUser handles user registration and sends verification OTP
+// registeruser handles user registration and sends verification otp
 func (s *AuthUserAdminService) RegisterUser(ctx context.Context, req *authUserAdminService.RegisterUserRequest) (*authUserAdminService.RegisterUserResponse, error) {
 	if req.Password != req.ConfirmPassword {
 		return nil, s.createGrpcError(codes.InvalidArgument, "The passwords entered do not match", customerrors.ERR_REG_PASSWORD_MISMATCH, nil)
@@ -95,8 +98,8 @@ func (s *AuthUserAdminService) RegisterUser(ctx context.Context, req *authUserAd
 	}, nil
 }
 
+// loginwithgoogle handles google oauth login
 func (s *AuthUserAdminService) LoginWithGoogle(ctx context.Context, req *authUserAdminService.GoogleLoginRequest) (*authUserAdminService.LoginUserResponse, error) {
-	// Verify Google ID token
 	token, err := s.googleCfg.Client(ctx, &oauth2.Token{AccessToken: req.IdToken}).Get("https://www.googleapis.com/oauth2/v3/userinfo")
 	if err != nil {
 		return nil, s.createGrpcError(codes.InvalidArgument, "Invalid Google token", customerrors.ERR_GOOGLE_TOKEN_INVALID, err)
@@ -115,28 +118,36 @@ func (s *AuthUserAdminService) LoginWithGoogle(ctx context.Context, req *authUse
 		return nil, s.createGrpcError(codes.Internal, "Failed to parse Google user info", customerrors.ERR_GOOGLE_TOKEN_INVALID, err)
 	}
 
-	// Check if user exists
 	user, errorType, err := s.repo.GetUserByEmail(googleUser.Email)
 	if err != nil && errorType != "" {
 		return nil, s.createGrpcError(codes.NotFound, "Error retrieving user", errorType, err)
 	}
 
-	// If user exists, check auth type
 	if user.ID != "" {
 		if user.AuthType != "google" {
 			return nil, s.createGrpcError(codes.AlreadyExists, "Account exists with different login method. Please use email or other methods.", customerrors.ERR_LOGIN_METHOD_CONFLICT, nil)
 		}
-		// Check ban status
-		banStatus, errorType, err := s.repo.CheckBanStatus(user.ID)
+		cacheKey := fmt.Sprintf("ban_status:%s", user.ID)
+		banStatus, err := s.cache.Get(cacheKey)
+		if err == nil && banStatus != "" {
+			var cachedBan authUserAdminService.CheckBanStatusResponse
+			if err := json.Unmarshal([]byte(banStatus), &cachedBan); err == nil && cachedBan.IsBanned {
+				return nil, s.createGrpcError(codes.Unauthenticated, "Your account has been banned", customerrors.ERR_LOGIN_ACCOUNT_BANNED, nil)
+			}
+		}
+
+		banStatusResp, errorType, err := s.repo.CheckBanStatus(user.ID)
 		if err != nil {
 			return nil, s.createGrpcError(codes.Internal, "Error checking ban status", errorType, err)
 		}
-		if banStatus.IsBanned {
+		if banStatusResp.IsBanned {
+			banBytes, _ := json.Marshal(banStatusResp)
+			_ = s.cache.Set(cacheKey, banBytes, 30*time.Minute)
 			return nil, s.createGrpcError(codes.Unauthenticated, "Your account has been banned", customerrors.ERR_LOGIN_ACCOUNT_BANNED, nil)
 		}
+		_ = s.cache.Set(cacheKey, []byte{}, 30*time.Minute)
 	} else {
 		userId := uuid.New().String()
-
 		registerReq := &db.User{
 			ID:                userId,
 			FirstName:         googleUser.GivenName,
@@ -150,20 +161,17 @@ func (s *AuthUserAdminService) LoginWithGoogle(ctx context.Context, req *authUse
 			TwoFactorEnabled:  false,
 		}
 
-		// Create new user using RegisterUser logic
 		_, _, err := s.repo.CreateGoogleUser(registerReq)
 		if err != nil {
 			return nil, s.createGrpcError(codes.Internal, "Failed to create user", customerrors.ERR_REG_CREATION_FAILED, err)
 		}
 
-		// Retrieve the newly created user
 		user, _, err = s.repo.GetUserByEmail(googleUser.Email)
 		if err != nil {
 			return nil, s.createGrpcError(codes.Internal, "Failed to retrieve newly created user", customerrors.ERR_REG_CREATION_FAILED, err)
 		}
 	}
 
-	// Generate JWT tokens
 	rtoken, _, err := utils.GenerateJWT(user.ID, "USER", s.jwtSecret, 7*24*time.Hour)
 	if err != nil {
 		return nil, s.createGrpcError(codes.Internal, "Failed to generate refresh token", customerrors.ERR_LOGIN_TOKEN_GEN_FAILED, err)
@@ -198,7 +206,7 @@ func (s *AuthUserAdminService) LoginWithGoogle(ctx context.Context, req *authUse
 	}, nil
 }
 
-// LoginUser handles user login with JWT generation
+// loginuser handles user login with jwt generation
 func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdminService.LoginUserRequest) (*authUserAdminService.LoginUserResponse, error) {
 	user, errorType, err := s.repo.GetUserByEmail(req.Email)
 	if err != nil {
@@ -212,13 +220,25 @@ func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdmin
 		return nil, s.createGrpcError(codes.AlreadyExists, "Account exists with different login method. Please use Google or other methods.", customerrors.ERR_LOGIN_METHOD_CONFLICT, nil)
 	}
 
-	banStatus, errorType, err := s.repo.CheckBanStatus(user.ID)
+	cacheKey := fmt.Sprintf("ban_status:%s", user.ID)
+	banStatus, err := s.cache.Get(cacheKey)
+	if err == nil && banStatus != "" {
+		var cachedBan authUserAdminService.CheckBanStatusResponse
+		if err := json.Unmarshal([]byte(banStatus), &cachedBan); err == nil && cachedBan.IsBanned {
+			return nil, s.createGrpcError(codes.Unauthenticated, "Your account has been banned", customerrors.ERR_LOGIN_ACCOUNT_BANNED, nil)
+		}
+	}
+
+	banStatusResp, errorType, err := s.repo.CheckBanStatus(user.ID)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while checking your ban status", errorType, err)
 	}
-	if banStatus.IsBanned {
+	if banStatusResp.IsBanned {
+		banBytes, _ := json.Marshal(banStatusResp)
+		_ = s.cache.Set(cacheKey, banBytes, 30*time.Minute)
 		return nil, s.createGrpcError(codes.Unauthenticated, "Your account has been banned", customerrors.ERR_LOGIN_ACCOUNT_BANNED, nil)
 	}
+	_ = s.cache.Set(cacheKey, []byte{}, 30*time.Minute)
 
 	valid, errorType, err := s.repo.CheckUserPassword(user.ID, req.Password)
 	if err != nil {
@@ -232,13 +252,13 @@ func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdmin
 		return nil, s.createGrpcError(codes.Unauthenticated, "Your email address requires verification", customerrors.ERR_LOGIN_NOT_VERIFIED, nil)
 	}
 
-	isEnabled, errorType, err := s.repo.GetTwoFactorAuthStatus(user.Email)
+	isEnabled, errorType, err := s.repo.GetTwoFactorAuthStatus(req.Email)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while checking 2FA status", errorType, err)
 	}
 
 	if isEnabled {
-		valid, errorType, err := s.repo.ValidateTwoFactorAuth(user.Email, req.TwoFactorCode)
+		valid, errorType, err := s.repo.ValidateTwoFactorAuth(req.Email, req.TwoFactorCode)
 		if err != nil {
 			return nil, s.createGrpcError(codes.NotFound, "An error occurred while verifying OTP", errorType, err)
 		}
@@ -285,7 +305,7 @@ func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdmin
 	}, nil
 }
 
-// LoginAdmin handles admin login with JWT generation
+// loginadmin handles admin login with jwt generation
 func (s *AuthUserAdminService) LoginAdmin(ctx context.Context, req *authUserAdminService.LoginAdminRequest) (*authUserAdminService.LoginAdminResponse, error) {
 	user, errorType, err := s.repo.GetUserByEmail(req.Email)
 	if err != nil {
@@ -319,7 +339,7 @@ func (s *AuthUserAdminService) LoginAdmin(ctx context.Context, req *authUserAdmi
 	}, nil
 }
 
-// TokenRefresh refreshes an access token
+// tokenrefresh refreshes an access token
 func (s *AuthUserAdminService) TokenRefresh(ctx context.Context, req *authUserAdminService.TokenRefreshRequest) (*authUserAdminService.TokenRefreshResponse, error) {
 	claims := &utils.Claims{}
 	token, err := jwt.ParseWithClaims(req.RefreshToken, claims, func(token *jwt.Token) (interface{}, error) {
@@ -341,7 +361,7 @@ func (s *AuthUserAdminService) TokenRefresh(ctx context.Context, req *authUserAd
 	}, nil
 }
 
-// LogoutUser handles user logout (placeholder, as JWT is stateless)
+// logoutuser handles user logout (placeholder, as jwt is stateless)
 func (s *AuthUserAdminService) LogoutUser(ctx context.Context, req *authUserAdminService.LogoutRequest) (*authUserAdminService.LogoutResponse, error) {
 	errorType, err := s.repo.LogoutUser(req.UserID)
 	if err != nil {
@@ -353,7 +373,7 @@ func (s *AuthUserAdminService) LogoutUser(ctx context.Context, req *authUserAdmi
 	}, nil
 }
 
-// ResendEmailVerification resends a verification OTP
+// resendemailverification resends a verification otp
 func (s *AuthUserAdminService) ResendEmailVerification(ctx context.Context, req *authUserAdminService.ResendEmailVerificationRequest) (*authUserAdminService.ResendEmailVerificationResponse, error) {
 	_, expiryAt, errorType, err := s.repo.ResendEmailVerification(req.Email)
 	if err != nil {
@@ -365,7 +385,7 @@ func (s *AuthUserAdminService) ResendEmailVerification(ctx context.Context, req 
 	}, nil
 }
 
-// VerifyUser verifies a user with an OTP
+// verifyuser verifies a user with an otp
 func (s *AuthUserAdminService) VerifyUser(ctx context.Context, req *authUserAdminService.VerifyUserRequest) (*authUserAdminService.VerifyUserResponse, error) {
 	verified, errorType, err := s.repo.VerifyUserToken(req.Email, req.Token)
 	if err != nil {
@@ -374,12 +394,16 @@ func (s *AuthUserAdminService) VerifyUser(ctx context.Context, req *authUserAdmi
 	if !verified {
 		return nil, s.createGrpcError(codes.InvalidArgument, "The verification code is invalid or has expired", customerrors.ERR_VERIFY_TOKEN_INVALID, nil)
 	}
+
+	cacheKey := fmt.Sprintf("user_profile:%s", req.Email)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.VerifyUserResponse{
 		Message: "Your account has been successfully verified. You may now log in.",
 	}, nil
 }
 
-// ForgotPassword initiates password recovery
+// forgotpassword initiates password recovery
 func (s *AuthUserAdminService) ForgotPassword(ctx context.Context, req *authUserAdminService.ForgotPasswordRequest) (*authUserAdminService.ForgotPasswordResponse, error) {
 	if !repository.IsValidEmail(req.Email) {
 		return nil, s.createGrpcError(codes.InvalidArgument, "Please provide a valid email address", customerrors.ERR_PW_FORGOT_INVALID_EMAIL, nil)
@@ -397,7 +421,7 @@ func (s *AuthUserAdminService) ForgotPassword(ctx context.Context, req *authUser
 	}, nil
 }
 
-// FinishForgotPassword completes the password reset process
+// finishforgotpassword completes the password reset process
 func (s *AuthUserAdminService) FinishForgotPassword(ctx context.Context, req *authUserAdminService.FinishForgotPasswordRequest) (*authUserAdminService.FinishForgotPasswordResponse, error) {
 	if req.NewPassword != req.ConfirmPassword {
 		return nil, s.createGrpcError(codes.InvalidArgument, "The new passwords do not match", customerrors.ERR_PW_RESET_MISMATCH, nil)
@@ -411,12 +435,15 @@ func (s *AuthUserAdminService) FinishForgotPassword(ctx context.Context, req *au
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while resetting the password", errorType, err)
 	}
 
+	cacheKey := fmt.Sprintf("user_profile:%s", req.Email)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.FinishForgotPasswordResponse{
 		Message: "Your password has been reset successfully.",
 	}, nil
 }
 
-// ChangePassword allows authenticated users to change their password
+// changepassword allows authenticated users to change their password
 func (s *AuthUserAdminService) ChangePassword(ctx context.Context, req *authUserAdminService.ChangePasswordRequest) (*authUserAdminService.ChangePasswordResponse, error) {
 	if req.NewPassword != req.ConfirmPassword {
 		return nil, s.createGrpcError(codes.InvalidArgument, "The new passwords do not match", customerrors.ERR_PW_CHANGE_MISMATCH, nil)
@@ -430,17 +457,44 @@ func (s *AuthUserAdminService) ChangePassword(ctx context.Context, req *authUser
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while changing the password", errorType, err)
 	}
 
+	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.ChangePasswordResponse{
 		Message: "Your password has been updated successfully.",
 	}, nil
 }
 
-// UpdateProfile updates user profile
+// updateprofile updates user profile
 func (s *AuthUserAdminService) UpdateProfile(ctx context.Context, req *authUserAdminService.UpdateProfileRequest) (*authUserAdminService.UpdateProfileResponse, error) {
+	currentUser, _, err := s.repo.GetUserByUserID(req.UserID)
+	if err != nil {
+		return nil, s.createGrpcError(codes.NotFound, "user not found", customerrors.ERR_USER_NOT_FOUND, err)
+	}
+
+	username := strings.ToLower(req.UserName)
+	if len(username) < 3 {
+		return nil, s.createGrpcError(codes.InvalidArgument, "username too short", customerrors.ERR_INVALID_USERNAME, nil)
+	}
+
+	if username != strings.ToLower(currentUser.UserName) {
+		available := s.repo.UserAvailable(username)
+		if !available {
+			return nil, s.createGrpcError(codes.AlreadyExists, "username taken", customerrors.ERR_USERNAME_TAKEN, nil)
+		}
+	}
+
+	req.UserName = username
+	// fmt.Println("before udpate ",req)
+
 	errorType, err := s.repo.UpdateProfile(req)
 	if err != nil {
-		return nil, s.createGrpcError(codes.NotFound, "An error occurred while updating your profile", errorType, err)
+		return nil, s.createGrpcError(codes.Internal, "update failed", errorType, err)
 	}
+
+	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.UpdateProfileResponse{
 		UserProfile: &authUserAdminService.UserProfile{
 			UserID:            req.UserID,
@@ -448,40 +502,71 @@ func (s *AuthUserAdminService) UpdateProfile(ctx context.Context, req *authUserA
 			LastName:          req.LastName,
 			PrimaryLanguageID: req.PrimaryLanguageID,
 			Country:           req.Country,
-			UserName:          req.UserName,
+			UserName:          username,
+			Bio:               req.Bio,
 			Socials: &authUserAdminService.Socials{
 				Github:   req.Socials.Github,
 				Twitter:  req.Socials.Twitter,
 				Linkedin: req.Socials.Linkedin,
 			},
 		},
-		Message: "Your profile has been updated successfully.",
+		Message: "profile updated",
 	}, nil
 }
 
-// UpdateProfileImage updates the user's profile image
+// updateprofileimage updates the user's profile image
 func (s *AuthUserAdminService) UpdateProfileImage(ctx context.Context, req *authUserAdminService.UpdateProfileImageRequest) (*authUserAdminService.UpdateProfileImageResponse, error) {
 	errorType, err := s.repo.UpdateProfileImage(req)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while updating your profile image", errorType, err)
 	}
+
+	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.UpdateProfileImageResponse{
 		Message:   "Your profile image has been updated successfully.",
 		AvatarURL: req.AvatarURL,
 	}, nil
 }
 
-// GetUserProfile retrieves a user's profile
+// getuserprofile retrieves a user's profile
 func (s *AuthUserAdminService) GetUserProfile(ctx context.Context, req *authUserAdminService.GetUserProfileRequest) (*authUserAdminService.GetUserProfileResponse, error) {
+	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	cachedProfile, err := s.cache.Get(cacheKey)
+	if err == nil && cachedProfile != "" {
+		var profile authUserAdminService.GetUserProfileResponse
+		if err := json.Unmarshal([]byte(cachedProfile), &profile); err == nil {
+			return &profile, nil
+		}
+	}
+
 	resp, errorType, err := s.repo.GetUserProfile(req.UserID)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while retrieving the user profile", errorType, err)
 	}
+
+	profileBytes, _ := json.Marshal(resp)
+	if err := s.cache.Set(cacheKey, profileBytes, 1*time.Hour); err != nil {
+		log.Printf("Failed to cache user profile: %v", err)
+	}
+
 	return resp, nil
 }
 
-// CheckBanStatus checks if a user is banned
+// checkbanstatus checks if a user is banned
 func (s *AuthUserAdminService) CheckBanStatus(ctx context.Context, req *authUserAdminService.CheckBanStatusRequest) (*authUserAdminService.CheckBanStatusResponse, error) {
+	cacheKey := fmt.Sprintf("ban_status:%s", req.UserID)
+	cachedBan, err := s.cache.Get(cacheKey)
+	if err == nil && cachedBan != "" {
+		var banStatus authUserAdminService.CheckBanStatusResponse
+		if err := json.Unmarshal([]byte(cachedBan), &banStatus); err != nil {
+			log.Printf("failed to unmarshal cached ban status for key %s: %v", cacheKey, err)
+		} else {
+			return &banStatus, nil
+		}
+	}
+
 	resp, errorType, err := s.repo.CheckBanStatus(req.UserID)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while checking ban status", errorType, err)
@@ -489,54 +574,108 @@ func (s *AuthUserAdminService) CheckBanStatus(ctx context.Context, req *authUser
 	if resp == nil {
 		return nil, s.createGrpcError(codes.NotFound, "The specified user could not be found", customerrors.ERR_BAN_STATUS_NOT_FOUND, nil)
 	}
+
+	banBytes, err := json.Marshal(resp)
+	if err == nil {
+		if err := s.cache.Set(cacheKey, banBytes, 30*time.Minute); err != nil {
+			log.Printf("failed to cache ban status: %v", err)
+		}
+	} else {
+		log.Printf("failed to marshal ban status for caching: %v", err)
+	}
+
 	return resp, nil
 }
 
-// FollowUser adds a follow relationship
+// followuser adds a follow relationship
 func (s *AuthUserAdminService) FollowUser(ctx context.Context, req *authUserAdminService.FollowUserRequest) (*authUserAdminService.FollowUserResponse, error) {
 	errorType, err := s.repo.FollowUser(req.FollowerID, req.FolloweeID)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while following the user", errorType, err)
 	}
+
+	followingKey := fmt.Sprintf("following:%s", req.FollowerID)
+	followersKey := fmt.Sprintf("followers:%s", req.FolloweeID)
+	_ = s.cache.Delete(followingKey)
+	_ = s.cache.Delete(followersKey)
+
 	return &authUserAdminService.FollowUserResponse{
 		Message: "You are now following this user.",
 	}, nil
 }
 
-// UnfollowUser removes a follow relationship
+// unfollowuser removes a follow relationship
 func (s *AuthUserAdminService) UnfollowUser(ctx context.Context, req *authUserAdminService.UnfollowUserRequest) (*authUserAdminService.UnfollowUserResponse, error) {
 	errorType, err := s.repo.UnfollowUser(req.FollowerID, req.FolloweeID)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while unfollowing the user", errorType, err)
 	}
+
+	followingKey := fmt.Sprintf("following:%s", req.FollowerID)
+	followersKey := fmt.Sprintf("followers:%s", req.FolloweeID)
+	_ = s.cache.Delete(followingKey)
+	_ = s.cache.Delete(followersKey)
+
 	return &authUserAdminService.UnfollowUserResponse{
 		Message: "You have unfollowed this user.",
 	}, nil
 }
 
-// GetFollowing retrieves users a given user is following
+// getfollowing retrieves users a given user is following
 func (s *AuthUserAdminService) GetFollowing(ctx context.Context, req *authUserAdminService.GetFollowingRequest) (*authUserAdminService.GetFollowingResponse, error) {
+	cacheKey := fmt.Sprintf("following:%s", req.UserID)
+	cachedFollowing, err := s.cache.Get(cacheKey)
+	if err == nil && cachedFollowing != "" {
+		var following authUserAdminService.GetFollowingResponse
+		if err := json.Unmarshal([]byte(cachedFollowing), &following); err == nil {
+			return &following, nil
+		}
+	}
+
 	profiles, errorType, err := s.repo.GetFollowing(req.UserID)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while retrieving followed users", errorType, err)
 	}
-	return &authUserAdminService.GetFollowingResponse{
+
+	resp := &authUserAdminService.GetFollowingResponse{
 		Users: profiles,
-	}, nil
+	}
+	followingBytes, _ := json.Marshal(resp)
+	if err := s.cache.Set(cacheKey, followingBytes, 30*time.Minute); err != nil {
+		log.Printf("Failed to cache following list: %v", err)
+	}
+
+	return resp, nil
 }
 
-// GetFollowers retrieves users following a given user
+// getfollowers retrieves users following a given user
 func (s *AuthUserAdminService) GetFollowers(ctx context.Context, req *authUserAdminService.GetFollowersRequest) (*authUserAdminService.GetFollowersResponse, error) {
+	cacheKey := fmt.Sprintf("followers:%s", req.UserID)
+	cachedFollowers, err := s.cache.Get(cacheKey)
+	if err == nil && cachedFollowers != "" {
+		var followers authUserAdminService.GetFollowersResponse
+		if err := json.Unmarshal([]byte(cachedFollowers), &followers); err == nil {
+			return &followers, nil
+		}
+	}
+
 	profiles, errorType, err := s.repo.GetFollowers(req.UserID)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while retrieving followers", errorType, err)
 	}
-	return &authUserAdminService.GetFollowersResponse{
+
+	resp := &authUserAdminService.GetFollowersResponse{
 		Users: profiles,
-	}, nil
+	}
+	followersBytes, _ := json.Marshal(resp)
+	if err := s.cache.Set(cacheKey, followersBytes, 30*time.Minute); err != nil {
+		log.Printf("Failed to cache followers list: %v", err)
+	}
+
+	return resp, nil
 }
 
-// CreateUserAdmin creates a new admin user
+// createuseradmin creates a new admin user
 func (s *AuthUserAdminService) CreateUserAdmin(ctx context.Context, req *authUserAdminService.CreateUserAdminRequest) (*authUserAdminService.CreateUserAdminResponse, error) {
 	if req.Password != req.ConfirmPassword {
 		return nil, s.createGrpcError(codes.InvalidArgument, "The passwords entered do not match", customerrors.ERR_ADMIN_CREATE_PASSWORD_MISMATCH, nil)
@@ -558,7 +697,7 @@ func (s *AuthUserAdminService) CreateUserAdmin(ctx context.Context, req *authUse
 	}, nil
 }
 
-// UpdateUserAdmin updates an admin user
+// updateuseradmin updates an admin user
 func (s *AuthUserAdminService) UpdateUserAdmin(ctx context.Context, req *authUserAdminService.UpdateUserAdminRequest) (*authUserAdminService.UpdateUserAdminResponse, error) {
 	isAdmin, errorType, err := s.repo.IsAdmin(req.UserID)
 	if err != nil {
@@ -578,56 +717,76 @@ func (s *AuthUserAdminService) UpdateUserAdmin(ctx context.Context, req *authUse
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while updating the admin account", errorType, err)
 	}
+
+	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.UpdateUserAdminResponse{
 		Message: "The admin account has been updated successfully.",
 	}, nil
 }
 
-// BanUser sets a user as banned
+// banuser sets a user as banned
 func (s *AuthUserAdminService) BanUser(ctx context.Context, req *authUserAdminService.BanUserRequest) (*authUserAdminService.BanUserResponse, error) {
 	errorType, err := s.repo.BanUser(req.UserID, req.BanReason, req.BanExpiry, req.BanType)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while banning the user", errorType, err)
 	}
+
+	cacheKey := fmt.Sprintf("ban_status:%s", req.UserID)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.BanUserResponse{
 		Message: "The user has been banned successfully.",
 	}, nil
 }
 
-// UnbanUser removes a user's ban
+// unbanuser removes a user's ban
 func (s *AuthUserAdminService) UnbanUser(ctx context.Context, req *authUserAdminService.UnbanUserRequest) (*authUserAdminService.UnbanUserResponse, error) {
 	errorType, err := s.repo.UnbanUser(req.UserID)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while unbanning the user", errorType, err)
 	}
+
+	cacheKey := fmt.Sprintf("ban_status:%s", req.UserID)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.UnbanUserResponse{
 		Message: "The user has been unbanned successfully.",
 	}, nil
 }
 
-// VerifyAdminUser verifies a user (admin action)
+// verifyadminuser verifies a user (admin action)
 func (s *AuthUserAdminService) VerifyAdminUser(ctx context.Context, req *authUserAdminService.VerifyAdminUserRequest) (*authUserAdminService.VerifyAdminUserResponse, error) {
 	errorType, err := s.repo.VerifyAdminUser(req.UserID)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while verifying the user", errorType, err)
 	}
+
+	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.VerifyAdminUserResponse{
 		Message: "The user has been verified successfully.",
 	}, nil
 }
 
-// UnverifyUser un-verifies a user (admin action)
+// unverifyuser un-verifies a user (admin action)
 func (s *AuthUserAdminService) UnverifyUser(ctx context.Context, req *authUserAdminService.UnverifyUserAdminRequest) (*authUserAdminService.UnverifyUserAdminResponse, error) {
 	errorType, err := s.repo.UnverifyUser(req.UserID)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while unverifying the user", errorType, err)
 	}
+
+	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.UnverifyUserAdminResponse{
 		Message: "The user’s verification has been removed successfully.",
 	}, nil
 }
 
-// SoftDeleteUserAdmin soft deletes a user
+// softdeleteuseradmin soft deletes a user
 func (s *AuthUserAdminService) SoftDeleteUserAdmin(ctx context.Context, req *authUserAdminService.SoftDeleteUserAdminRequest) (*authUserAdminService.SoftDeleteUserAdminResponse, error) {
 	isAdmin, errorType, err := s.repo.IsAdmin(req.UserID)
 	if err != nil {
@@ -641,25 +800,45 @@ func (s *AuthUserAdminService) SoftDeleteUserAdmin(ctx context.Context, req *aut
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while deleting the user", errorType, err)
 	}
+
+	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.SoftDeleteUserAdminResponse{
 		Message: "The user has been soft-deleted successfully.",
 	}, nil
 }
 
-// GetAllUsers retrieves a paginated list of users
+// getallusers retrieves a paginated list of users
 func (s *AuthUserAdminService) GetAllUsers(ctx context.Context, req *authUserAdminService.GetAllUsersRequest) (*authUserAdminService.GetAllUsersResponse, error) {
+	cacheKey := fmt.Sprintf("all_users:%v:%d", req.PageToken, req.Limit)
+	cachedUsers, err := s.cache.Get(cacheKey)
+	if err == nil && cachedUsers != "" {
+		var users authUserAdminService.GetAllUsersResponse
+		if err := json.Unmarshal([]byte(cachedUsers), &users); err == nil {
+			return &users, nil
+		}
+	}
+
 	profiles, totalCount, errorType, err := s.repo.GetAllUsers(req)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while retrieving users", errorType, err)
 	}
-	return &authUserAdminService.GetAllUsersResponse{
+
+	resp := &authUserAdminService.GetAllUsersResponse{
 		Users:      profiles,
 		TotalCount: totalCount,
 		Message:    "User list retrieved successfully.",
-	}, nil
+	}
+	usersBytes, _ := json.Marshal(resp)
+	if err := s.cache.Set(cacheKey, usersBytes, 1*time.Hour); err != nil {
+		log.Printf("Failed to cache all users: %v", err)
+	}
+
+	return resp, nil
 }
 
-// BanHistory retrieves ban history for a user
+// banhistory retrieves ban history for a user
 func (s *AuthUserAdminService) BanHistory(ctx context.Context, req *authUserAdminService.BanHistoryRequest) (*authUserAdminService.BanHistoryResponse, error) {
 	history, errorType, err := s.repo.GetBanHistory(req.UserID)
 	if err != nil {
@@ -671,25 +850,45 @@ func (s *AuthUserAdminService) BanHistory(ctx context.Context, req *authUserAdmi
 	}, nil
 }
 
-// SearchUsers searches for users with pagination
+// searchusers searches for users with pagination
 func (s *AuthUserAdminService) SearchUsers(ctx context.Context, req *authUserAdminService.SearchUsersRequest) (*authUserAdminService.SearchUsersResponse, error) {
+	cacheKey := fmt.Sprintf("search_users:%s:%s:%d", req.Query, req.PageToken, req.Limit)
+	cachedSearch, err := s.cache.Get(cacheKey)
+	if err == nil && cachedSearch != "" {
+		var search authUserAdminService.SearchUsersResponse
+		if err := json.Unmarshal([]byte(cachedSearch), &search); err == nil {
+			return &search, nil
+		}
+	}
+
 	users, nextPageToken, errorType, err := s.repo.SearchUsers(req.Query, req.PageToken, req.Limit)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while searching for users", errorType, err)
 	}
-	return &authUserAdminService.SearchUsersResponse{
+
+	resp := &authUserAdminService.SearchUsersResponse{
 		Users:         users,
 		NextPageToken: nextPageToken,
 		Message:       "User search completed successfully.",
-	}, nil
+	}
+	searchBytes, _ := json.Marshal(resp)
+	if err := s.cache.Set(cacheKey, searchBytes, 1*time.Hour); err != nil {
+		log.Printf("Failed to cache search results: %v", err)
+	}
+
+	return resp, nil
 }
 
-// SetUpTwoFactorAuth enables 2FA for a user
+// setuptwofactorauth enables 2fa for a user
 func (s *AuthUserAdminService) SetUpTwoFactorAuth(ctx context.Context, req *authUserAdminService.SetUpTwoFactorAuthRequest) (*authUserAdminService.SetUpTwoFactorAuthResponse, error) {
 	qrCodeImage, otpSecret, errorType, err := s.repo.SetUpTwoFactorAuth(req.UserID)
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while setting up two factor authentication", errorType, err)
 	}
+
+	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.SetUpTwoFactorAuthResponse{
 		Message: "Two factor authentication setup successfully",
 		Image:   qrCodeImage,
@@ -697,22 +896,26 @@ func (s *AuthUserAdminService) SetUpTwoFactorAuth(ctx context.Context, req *auth
 	}, nil
 }
 
+// verifytwofactorauth verifies 2fa setup
 func (s *AuthUserAdminService) VerifyTwoFactorAuth(ctx context.Context, req *authUserAdminService.VerifyTwoFactorAuthRequest) (*authUserAdminService.VerifyTwoFactorAuthResponse, error) {
 	done, errorType, err := s.repo.VerifyTwoFactorAuth(req.UserID, req.TwoFactorCode)
 	if err != nil {
-			return nil, s.createGrpcError(codes.NotFound, "An error occurred while verifying two factor authentication", errorType, err)
+		return nil, s.createGrpcError(codes.NotFound, "An error occurred while verifying two factor authentication", errorType, err)
 	}
 	if !done {
-			return nil, s.createGrpcError(codes.InvalidArgument, "Invalid two factor authentication code", customerrors.ERR_2FA_VERIFY_INVALID, nil)
+		return nil, s.createGrpcError(codes.InvalidArgument, "Invalid two factor authentication code", customerrors.ERR_2FA_VERIFY_INVALID, nil)
 	}
-	
+
+	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.VerifyTwoFactorAuthResponse{
-			Message: "Two factor authentication verified successfully",
-			Verified: true,
+		Message:  "Two factor authentication verified successfully",
+		Verified: true,
 	}, nil
 }
 
-// DisableTwoFactorAuth disables 2FA for a user
+// disabletwofactorauth disables 2fa for a user
 func (s *AuthUserAdminService) DisableTwoFactorAuth(ctx context.Context, req *authUserAdminService.DisableTwoFactorAuthRequest) (*authUserAdminService.DisableTwoFactorAuthResponse, error) {
 	valid, errorType, err := s.repo.CheckUserPassword(req.UserID, req.Password)
 	if err != nil {
@@ -726,12 +929,16 @@ func (s *AuthUserAdminService) DisableTwoFactorAuth(ctx context.Context, req *au
 	if err != nil {
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while disabling two factor authentication", errorType, err)
 	}
+
+	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	_ = s.cache.Delete(cacheKey)
+
 	return &authUserAdminService.DisableTwoFactorAuthResponse{
 		Message: "Two factor authentication has been disabled successfully",
 	}, nil
 }
 
-// GetTwoFactorAuthStatus retrieves the 2FA status for a user
+// gettwofactorauthstatus retrieves the 2fa status for a user
 func (s *AuthUserAdminService) GetTwoFactorAuthStatus(ctx context.Context, req *authUserAdminService.GetTwoFactorAuthStatusRequest) (*authUserAdminService.GetTwoFactorAuthStatusResponse, error) {
 	isEnabled, errorType, err := s.repo.GetTwoFactorAuthStatus(req.Email)
 	if err != nil {
@@ -739,5 +946,17 @@ func (s *AuthUserAdminService) GetTwoFactorAuthStatus(ctx context.Context, req *
 	}
 	return &authUserAdminService.GetTwoFactorAuthStatusResponse{
 		IsEnabled: isEnabled,
+	}, nil
+}
+
+// usernameavailable checks if a username is available
+func (s *AuthUserAdminService) UsernameAvailable(ctx context.Context, req *authUserAdminService.UsernameAvailableRequest) (*authUserAdminService.UsernameAvailableResponse, error) {
+	if len(req.Username) < 3 {
+		return &authUserAdminService.UsernameAvailableResponse{
+			Status: false,
+		}, nil
+	}
+	return &authUserAdminService.UsernameAvailableResponse{
+		Status: s.repo.UserAvailable(req.Username),
 	}, nil
 }

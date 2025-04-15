@@ -4,6 +4,7 @@ import (
 	"log"
 	"net"
 
+	"xcode/cache"
 	"xcode/configs"
 	"xcode/db"
 	"xcode/repository"
@@ -24,9 +25,11 @@ func main() {
 	}
 	defer db.Close(dbConn)
 
+	redisCache := cache.NewRedisCache(config.RedisURL, "", 0)
+
 	// Initialize repository and service
 	userRepo := repository.NewUserRepository(dbConn, &config)
-	authUserAdminService := service.NewAuthUserAdminService(userRepo, &config, config.JWTSecretKey)
+	authUserAdminService := service.NewAuthUserAdminService(userRepo, *redisCache, &config, config.JWTSecretKey)
 
 	// Start gRPC server
 	lis, err := net.Listen("tcp", ":"+config.UserGRPCPort)
