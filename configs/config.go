@@ -24,6 +24,7 @@ type Config struct {
 	GoogleClientSecret string
 	GoogleRedirectURL  string
 	RedisURL           string
+	ResendAPIKey       string
 }
 
 // LoadConfig loads configuration from environment variables
@@ -37,17 +38,18 @@ func LoadConfig() Config {
 		PostgresDSN:        getEnv("POSTGRESDSN", "host=localhost port=5432 user=admin password=password dbname=xcodedev sslmode=disable"),
 		JWTSecretKey:       getEnv("JWTSECRETKEY", "secretLeetcode"),
 		APPURL:             getEnv("APPURL", "http://localhost:7000"),
-		FRONTENDURL:        getEnv("FRONTENDURL", "http://localhost:5173"),
+		FRONTENDURL:        getEnv("FRONTENDURL", "http://localhost:8080"),
 		SMTPAppKey:         getEnv("SMTPAPPKEY", ""),
 		SMTPHost:           getEnv("SMTPHOST", "smtp.gmail.com"),
 		SMTPPort:           getEnv("SMTPPORT", "587"),
-		SMTPUser:           getEnv("SMTPUSER", "xcodedev@gmail.com"),
+		SMTPUser:           getEnv("SMTPUSER", "zenxbattle.space"),
 		AdminPassword:      getEnv("ADMINPASSWORD", "admin"),
 		AdminUsername:      getEnv("ADMINUSERNAME", "admin"),
 		GoogleClientID:     getEnv("GOOGLECLIENTID", ""),
 		GoogleClientSecret: getEnv("GOOGLECLIENTSECRET", ""),
 		GoogleRedirectURL:  getEnv("GOOGLEREDIRECTURL", ""),
 		RedisURL:           getEnv("REDISURL", "localhost:6379"),
+		ResendAPIKey:       getEnv("RESENDAPIKEY", ""),
 	}
 
 	// fmt.Println(config)

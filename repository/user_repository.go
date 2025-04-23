@@ -201,12 +201,52 @@ func (r *UserRepository) UpdateProfileImage(req *AuthUserAdminService.UpdateProf
 	return "", nil
 }
 
-func (r *UserRepository) GetUserProfile(userID string) (*AuthUserAdminService.GetUserProfileResponse, string, error) {
+func (r *UserRepository) GetUserProfileByUserID(userID string) (*AuthUserAdminService.GetUserProfileResponse, string, error) {
 	if userID == "" {
 		return nil, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user ID cannot be empty")
 	}
 	var user db.User
 	if err := r.db.Where("id = ? AND deleted_at IS NULL", userID).First(&user).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, customerrors.ERR_PROFILE_NOT_FOUND, fmt.Errorf("user profile not found")
+		}
+		return nil, customerrors.ERR_CRED_CHECK_FAILED, fmt.Errorf("unable to retrieve profile")
+	}
+
+	// fmt.Println(user)
+
+	return &AuthUserAdminService.GetUserProfileResponse{
+		UserProfile: &AuthUserAdminService.UserProfile{
+			UserID:            user.ID,
+			UserName:          user.UserName,
+			FirstName:         user.FirstName,
+			LastName:          user.LastName,
+			AvatarData:        user.AvatarData,
+			Email:             user.Email,
+			Role:              user.Role,
+			Bio:               user.Bio,
+			Country:           user.Country,
+			IsBanned:          user.IsBanned,
+			IsVerified:        user.IsVerified,
+			PrimaryLanguageID: user.PrimaryLanguageID,
+			MuteNotifications: user.MuteNotifications,
+			TwoFactorEnabled:  user.TwoFactorEnabled,
+			Socials: &AuthUserAdminService.Socials{
+				Github:   user.Github,
+				Twitter:  user.Twitter,
+				Linkedin: user.Linkedin,
+			},
+			CreatedAt: user.CreatedAt,
+		},
+	}, "", nil
+}
+
+func (r *UserRepository) GetUserProfileByUsername(userName string) (*AuthUserAdminService.GetUserProfileResponse, string, error) {
+	if userName == "" {
+		return nil, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("username cannot be empty")
+	}
+	var user db.User
+	if err := r.db.Where("user_name = ? AND deleted_at IS NULL", userName).First(&user).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, customerrors.ERR_PROFILE_NOT_FOUND, fmt.Errorf("user profile not found")
 		}
@@ -402,6 +442,35 @@ func (r *UserRepository) GetFollowers(userID string) ([]*AuthUserAdminService.Us
 		})
 	}
 	return profiles, "", nil
+}
+
+// CheckFollowRelationship checks if ownerUserID follows targetUserID and if targetUserID follows ownerUserID
+func (r *UserRepository) CheckFollowRelationship(ownerUserID, targetUserID string) (isFollowing bool, isFollower bool, errorType string, err error) {
+	if ownerUserID == "" || targetUserID == "" {
+		return false, false, customerrors.ERR_PARAM_EMPTY, fmt.Errorf("user IDs cannot be empty")
+	}
+
+	// Check if ownerUserID is following targetUserID
+	var following db.Following
+	if err := r.db.Where("follower_id = ? AND followee_id = ?", ownerUserID, targetUserID).First(&following).Error; err != nil {
+		if err != gorm.ErrRecordNotFound {
+			return false, false, customerrors.ERR_FOLLOW_CHECK_FAILED, fmt.Errorf("failed to check following status")
+		}
+	} else {
+		isFollowing = true
+	}
+
+	// Check if targetUserID is following ownerUserID
+	var follower db.Follower
+	if err := r.db.Where("follower_id = ? AND followee_id = ?", targetUserID, ownerUserID).First(&follower).Error; err != nil {
+		if err != gorm.ErrRecordNotFound {
+			return false, false, customerrors.ERR_FOLLOW_CHECK_FAILED, fmt.Errorf("failed to check follower status")
+		}
+	} else {
+		isFollower = true
+	}
+
+	return isFollowing, isFollower, "", nil
 }
 
 func (r *UserRepository) CreateUserAdmin(req *AuthUserAdminService.CreateUserAdminRequest) (string, string, error) {
@@ -601,11 +670,25 @@ func (r *UserRepository) GetAllUsers(req *AuthUserAdminService.GetAllUsersReques
 	var profiles []*AuthUserAdminService.UserProfile
 	for _, u := range users {
 		profiles = append(profiles, &AuthUserAdminService.UserProfile{
-			UserID:    u.ID,
-			FirstName: u.FirstName,
-			LastName:  u.LastName,
-			Email:     u.Email,
-			Role:      u.Role,
+			UserID:             u.ID,
+			UserName:           u.UserName,
+			FirstName:          u.FirstName,
+			LastName:           u.LastName,
+			Country:            u.Country,
+			Role:               u.Role,
+			PrimaryLanguageID:  u.PrimaryLanguageID,
+			Email:              u.Email,
+			AuthType:           u.AuthType,
+			AvatarData:         u.AvatarData,
+			MuteNotifications:  u.MuteNotifications,
+			IsBanned:           u.IsBanned,
+			BanReason:          u.BanReason,
+			BanExpiration:      u.BanExpiration,
+			TwoFactorEnabled:   u.TwoFactorEnabled,
+			IsVerified:         u.IsVerified,
+			CreatedAt:          u.CreatedAt,
+			UpdatedAt:          u.UpdatedAt,
+			Bio:                u.Bio,
 			Socials: &AuthUserAdminService.Socials{
 				Github:   u.Github,
 				Twitter:  u.Twitter,
@@ -613,6 +696,7 @@ func (r *UserRepository) GetAllUsers(req *AuthUserAdminService.GetAllUsersReques
 			},
 		})
 	}
+	
 	return profiles, int32(totalCount), "", nil
 }
 
@@ -1033,6 +1117,8 @@ func (r *UserRepository) SearchUsers(query, pageToken string, limit int32) ([]*A
 		lastID := profiles[len(profiles)-1].UserID
 		nextPageToken = base64.StdEncoding.EncodeToString([]byte(lastID))
 	}
+
+	fmt.Println(profiles)
 
 	return profiles, nextPageToken, "", nil
 }

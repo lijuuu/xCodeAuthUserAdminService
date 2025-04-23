@@ -395,7 +395,7 @@ func (s *AuthUserAdminService) VerifyUser(ctx context.Context, req *authUserAdmi
 		return nil, s.createGrpcError(codes.InvalidArgument, "The verification code is invalid or has expired", customerrors.ERR_VERIFY_TOKEN_INVALID, nil)
 	}
 
-	cacheKey := fmt.Sprintf("user_profile:%s", req.Email)
+	cacheKey := fmt.Sprintf("user_profile:id:%s", req.Email)
 	_ = s.cache.Delete(cacheKey)
 
 	return &authUserAdminService.VerifyUserResponse{
@@ -435,7 +435,7 @@ func (s *AuthUserAdminService) FinishForgotPassword(ctx context.Context, req *au
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while resetting the password", errorType, err)
 	}
 
-	cacheKey := fmt.Sprintf("user_profile:%s", req.Email)
+	cacheKey := fmt.Sprintf("user_profile:id:%s", req.Email)
 	_ = s.cache.Delete(cacheKey)
 
 	return &authUserAdminService.FinishForgotPasswordResponse{
@@ -457,7 +457,7 @@ func (s *AuthUserAdminService) ChangePassword(ctx context.Context, req *authUser
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while changing the password", errorType, err)
 	}
 
-	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	cacheKey := fmt.Sprintf("user_profile:id:%s", req.UserID)
 	_ = s.cache.Delete(cacheKey)
 
 	return &authUserAdminService.ChangePasswordResponse{
@@ -492,7 +492,7 @@ func (s *AuthUserAdminService) UpdateProfile(ctx context.Context, req *authUserA
 		return nil, s.createGrpcError(codes.Internal, "update failed", errorType, err)
 	}
 
-	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	cacheKey := fmt.Sprintf("user_profile:id:%s", req.UserID)
 	_ = s.cache.Delete(cacheKey)
 
 	return &authUserAdminService.UpdateProfileResponse{
@@ -521,7 +521,7 @@ func (s *AuthUserAdminService) UpdateProfileImage(ctx context.Context, req *auth
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while updating your profile image", errorType, err)
 	}
 
-	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	cacheKey := fmt.Sprintf("user_profile:id:%s", req.UserID)
 	_ = s.cache.Delete(cacheKey)
 
 	return &authUserAdminService.UpdateProfileImageResponse{
@@ -530,9 +530,17 @@ func (s *AuthUserAdminService) UpdateProfileImage(ctx context.Context, req *auth
 	}, nil
 }
 
-// getuserprofile retrieves a user's profile
+// getuserprofile retrieves a user's profile by ID or Username
 func (s *AuthUserAdminService) GetUserProfile(ctx context.Context, req *authUserAdminService.GetUserProfileRequest) (*authUserAdminService.GetUserProfileResponse, error) {
-	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	var cacheKey string
+	if req.UserID != "" {
+		cacheKey = fmt.Sprintf("user_profile:id:%s", req.UserID)
+	} else if *req.UserName != "" {
+		cacheKey = fmt.Sprintf("user_profile:username:%s", *req.UserName)
+	} else {
+		return nil, s.createGrpcError(codes.InvalidArgument, "UserID or Username must be provided", "INVALID_ARGUMENT", nil)
+	}
+
 	cachedProfile, err := s.cache.Get(cacheKey)
 	if err == nil && cachedProfile != "" {
 		var profile authUserAdminService.GetUserProfileResponse
@@ -541,9 +549,18 @@ func (s *AuthUserAdminService) GetUserProfile(ctx context.Context, req *authUser
 		}
 	}
 
-	resp, errorType, err := s.repo.GetUserProfile(req.UserID)
+	// fetch from repo based on available field
+	var (
+		resp      *authUserAdminService.GetUserProfileResponse
+		errorType string
+	)
+	if req.UserID != "" {
+		resp, errorType, err = s.repo.GetUserProfileByUserID(req.UserID)
+	} else {
+		resp, errorType, err = s.repo.GetUserProfileByUsername(*req.UserName)
+	}
 	if err != nil {
-		return nil, s.createGrpcError(codes.NotFound, "An error occurred while retrieving the user profile", errorType, err)
+		return nil, s.createGrpcError(codes.NotFound, "Failed to retrieve user profile", errorType, err)
 	}
 
 	profileBytes, _ := json.Marshal(resp)
@@ -675,6 +692,55 @@ func (s *AuthUserAdminService) GetFollowers(ctx context.Context, req *authUserAd
 	return resp, nil
 }
 
+// GetFollowFollowingCheck checks if the owner user follows or is followed by the target user
+func (s *AuthUserAdminService) GetFollowFollowingCheck(ctx context.Context, req *authUserAdminService.GetFollowFollowingCheckRequest) (*authUserAdminService.GetFollowFollowingCheckResponse, error) {
+	ownerUserID := req.OwnerUserID
+	targetUserID := req.TargetUserID
+
+	// Check for empty user IDs
+	if ownerUserID == "" || targetUserID == "" {
+		return nil, s.createGrpcError(codes.InvalidArgument, "Owner user ID and target user ID cannot be empty", customerrors.ERR_PARAM_EMPTY, nil)
+	}
+
+	// Check if owner and target are the same
+	if ownerUserID == targetUserID {
+		return nil, s.createGrpcError(codes.InvalidArgument, "Cannot check follow status for self", customerrors.ERR_INVALID_REQUEST, nil)
+	}
+
+	// Check cache
+	cacheKey := fmt.Sprintf("follow_check:%s:%s", ownerUserID, targetUserID)
+	cachedCheck, err := s.cache.Get(cacheKey)
+	if err == nil && cachedCheck != "" {
+		var check authUserAdminService.GetFollowFollowingCheckResponse
+		if err := json.Unmarshal([]byte(cachedCheck), &check); err == nil {
+			return &check, nil
+		}
+	}
+
+	// Query repository
+	isFollowing, isFollower, errorType, err := s.repo.CheckFollowRelationship(ownerUserID, targetUserID)
+	if err != nil {
+		return nil, s.createGrpcError(codes.NotFound, "An error occurred while checking follow status", errorType, err)
+	}
+
+	resp := &authUserAdminService.GetFollowFollowingCheckResponse{
+		IsFollowing: isFollowing,
+		IsFollower:  isFollower,
+	}
+
+	// Cache the result
+	checkBytes, err := json.Marshal(resp)
+	if err == nil {
+		if err := s.cache.Set(cacheKey, checkBytes, 30*time.Minute); err != nil {
+			log.Printf("Failed to cache follow check: %v", err)
+		}
+	} else {
+		log.Printf("Failed to marshal follow check for caching: %v", err)
+	}
+
+	return resp, nil
+}
+
 // createuseradmin creates a new admin user
 func (s *AuthUserAdminService) CreateUserAdmin(ctx context.Context, req *authUserAdminService.CreateUserAdminRequest) (*authUserAdminService.CreateUserAdminResponse, error) {
 	if req.Password != req.ConfirmPassword {
@@ -718,7 +784,7 @@ func (s *AuthUserAdminService) UpdateUserAdmin(ctx context.Context, req *authUse
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while updating the admin account", errorType, err)
 	}
 
-	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	cacheKey := fmt.Sprintf("user_profile:id:%s", req.UserID)
 	_ = s.cache.Delete(cacheKey)
 
 	return &authUserAdminService.UpdateUserAdminResponse{
@@ -763,7 +829,7 @@ func (s *AuthUserAdminService) VerifyAdminUser(ctx context.Context, req *authUse
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while verifying the user", errorType, err)
 	}
 
-	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	cacheKey := fmt.Sprintf("user_profile:id:%s", req.UserID)
 	_ = s.cache.Delete(cacheKey)
 
 	return &authUserAdminService.VerifyAdminUserResponse{
@@ -778,7 +844,7 @@ func (s *AuthUserAdminService) UnverifyUser(ctx context.Context, req *authUserAd
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while unverifying the user", errorType, err)
 	}
 
-	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	cacheKey := fmt.Sprintf("user_profile:id:%s", req.UserID)
 	_ = s.cache.Delete(cacheKey)
 
 	return &authUserAdminService.UnverifyUserAdminResponse{
@@ -801,7 +867,7 @@ func (s *AuthUserAdminService) SoftDeleteUserAdmin(ctx context.Context, req *aut
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while deleting the user", errorType, err)
 	}
 
-	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	cacheKey := fmt.Sprintf("user_profile:id:%s", req.UserID)
 	_ = s.cache.Delete(cacheKey)
 
 	return &authUserAdminService.SoftDeleteUserAdminResponse{
@@ -886,7 +952,7 @@ func (s *AuthUserAdminService) SetUpTwoFactorAuth(ctx context.Context, req *auth
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while setting up two factor authentication", errorType, err)
 	}
 
-	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	cacheKey := fmt.Sprintf("user_profile:id:%s", req.UserID)
 	_ = s.cache.Delete(cacheKey)
 
 	return &authUserAdminService.SetUpTwoFactorAuthResponse{
@@ -906,7 +972,7 @@ func (s *AuthUserAdminService) VerifyTwoFactorAuth(ctx context.Context, req *aut
 		return nil, s.createGrpcError(codes.InvalidArgument, "Invalid two factor authentication code", customerrors.ERR_2FA_VERIFY_INVALID, nil)
 	}
 
-	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	cacheKey := fmt.Sprintf("user_profile:id:%s", req.UserID)
 	_ = s.cache.Delete(cacheKey)
 
 	return &authUserAdminService.VerifyTwoFactorAuthResponse{
@@ -930,7 +996,7 @@ func (s *AuthUserAdminService) DisableTwoFactorAuth(ctx context.Context, req *au
 		return nil, s.createGrpcError(codes.NotFound, "An error occurred while disabling two factor authentication", errorType, err)
 	}
 
-	cacheKey := fmt.Sprintf("user_profile:%s", req.UserID)
+	cacheKey := fmt.Sprintf("user_profile:id:%s", req.UserID)
 	_ = s.cache.Delete(cacheKey)
 
 	return &authUserAdminService.DisableTwoFactorAuthResponse{

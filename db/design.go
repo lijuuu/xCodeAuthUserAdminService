@@ -23,6 +23,8 @@ type User struct {
 	MuteNotifications bool           `gorm:"default:false;not null" json:"mute_notifications"`
 	IsBanned          bool           `gorm:"default:false;not null;index" json:"is_banned"`
 	BanID             string         `gorm:"type:varchar(255)" json:"ban_id"`
+	BanReason         string         `gorm:"type:varchar(255)" json:"ban_reason"`
+	BanExpiration     int64          `json:"ban_expiration"`
 	TwoFactorEnabled  bool           `gorm:"default:false;not null" json:"two_factor_enabled"`
 	IsVerified        bool           `gorm:"default:false;not null" json:"is_verified"`
 	TwoFactorSecret   string         `gorm:"type:varchar(255)" json:"two_factor_secret"`
