@@ -31,7 +31,7 @@ type Config struct {
 func LoadConfig() Config {
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatal("Error loading .env file")
+		log.Fatal("Error loading .env file", err)
 	}
 	config := Config{
 		UserGRPCPort:       getEnv("USERGRPCPORT", "50051"),
