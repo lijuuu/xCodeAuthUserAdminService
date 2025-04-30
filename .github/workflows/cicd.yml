@@ -83,7 +83,7 @@ jobs:
       # Step 6: Build the Go binary
       - name: Build binary
         run: |
-          GOOS=linux GOARCH=amd64 go build -o authuseradmin ./cmd
+          GOOS=linux GOARCH=amd64 go build -o authuseradmin ./cmd/main.go
 
       # Step 7: Upload binary, copy .env, and restart service on EC2
       - name: Deploy to EC2
