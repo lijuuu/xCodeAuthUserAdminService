@@ -4,3 +4,5 @@
 gin.log
 app.log
 *.log
+
+main

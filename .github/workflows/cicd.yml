@@ -1,4 +1,4 @@
-name: CI-CD Pipeline
+name: Auth User Admin CI-CD Pipeline
 
 on:
   push:
@@ -12,63 +12,198 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      # Step 1: Checkout code
+      # Step 1: Notify Slack – Deployment Started
+      - name: Notify Slack – Deployment Started
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          slack-bot-token: ${{ secrets.SLACK_WEBHOOK_URL }}
+          channel-id: 'ci-cd-notifications'  
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":rocket: *Deployment Started* for *${{ github.repository }}* (Auth User Admin) on branch *${{ github.ref_name }}*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Repository:*\n${{ github.repository }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Run ID:*\n${{ github.run_id }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Commit:*\n${{ github.sha }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Committer:*\n${{ github.actor }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run on GitHub>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOKS
+
+      # Step 2: Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Set up Go environment
+      # Step 3: Set up Go environment
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.24.1"
 
-      # Step 3: Install Go dependencies
+      # Step 4: Install Go dependencies
       - name: Install dependencies
         run: go mod download
 
-      # Step 4: Run Go vet to check for code issues
+      # Step 5: Run Go vet to check for code issues
       - name: Run go vet
         run: go vet ./...
 
-      # Step 5: Build the Go binary
+      # Step 6: Build the Go binary
       - name: Build binary
-        run: go build -o authuseradminservice ./cmd
-
-      # Step 6: Log in to Docker Hub
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # Step 7: Build and push Docker image
-      - name: Build and push Docker image
         run: |
-          docker build -t lijuthomas/authuseradminservice:${{ github.sha }} -t lijuthomas/authuseradminservice:latest .
-          docker push lijuthomas/authuseradminservice:${{ github.sha }}
-          docker push lijuthomas/authuseradminservice:latest
+          GOOS=linux GOARCH=amd64 go build -o authuseradmin ./cmd
 
-      # Step 8: Deploy to EC2
+      # Step 7: Upload binary, copy .env, and restart service on EC2
       - name: Deploy to EC2
         env:
-          EC2_HOST: ${{ secrets.EC2_SERVER_IP }}
           SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ secrets.EC2_SERVER_IP }}
         run: |
-          echo "$SSH_KEY" > ssh_key.pem
+          printf "%s" "$SSH_KEY" > ssh_key.pem
           chmod 600 ssh_key.pem
-          ssh -o StrictHostKeyChecking=no -i ssh_key.pem ubuntu@$EC2_HOST << EOF
-            # Log in to Docker Hub on EC2
-            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
-            
-            # Stop and remove any existing container
-            docker stop authuseradminservice || true
-            docker rm authuseradminservice || true
+          scp -o StrictHostKeyChecking=no -i ssh_key.pem authuseradmin ubuntu@$EC2_HOST:/tmp/authuseradmin
+          ssh -o StrictHostKeyChecking=no -i ssh_key.pem ubuntu@$EC2_HOST '
+            sudo systemctl stop authuseradmin.service || true &&
+            sudo mv /tmp/authuseradmin /usr/local/bin/authuseradmin &&
+            sudo chmod +x /usr/local/bin/authuseradmin &&
+            [ -f /home/ubuntu/.env ] && sudo cp /home/ubuntu/.env /usr/local/bin/.env || echo "Warning: /home/ubuntu/.env not found" &&
+            sudo chmod 600 /usr/local/bin/.env &&
+            sudo chown ubuntu:ubuntu /usr/local/bin/.env &&
+            sudo systemctl restart authuseradmin.service &&
+            sudo systemctl status authuseradmin.service
+          '
+          rm -f ssh_key.pem
 
-            # Pull the latest Docker image
-            docker pull lijuthomas/authuseradminservice:latest
+      # Step 8: Notify Slack – Deployment Successful
+      - name: Notify Slack – Deployment Successful
+        if: success()
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          slack-bot-token: ${{ secrets.SLACK_WEBHOOK_URL }}
+          channel-id: 'ci-cd-notifications'  
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":white_check_mark: *Deployment Succeeded* for *${{ github.repository }}* (Auth User Admin) on branch *${{ github.ref_name }}*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Repository:*\n${{ github.repository }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Run ID:*\n${{ github.run_id }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Commit:*\n${{ github.sha }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Committer:*\n${{ github.actor }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run on GitHub>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOKS
 
-            # Run the Docker container with required environment variables
-            docker run -d --name authuseradminservice -p 50051:50051 \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              lijuthomas/authuseradminservice:latest
-          EOF
+      # Step 9: Notify Slack – Deployment Failed
+      - name: Notify Slack – Deployment Failed
+        if: failure()
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          slack-bot-token: ${{ secrets.SLACK_WEBHOOK_URL }}
+          channel-id: 'ci-cd-notifications'  
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":x: *Deployment Failed* for *${{ github.repository }}* (Auth User Admin) on branch *${{ github.ref_name }}*"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Repository:*\n${{ github.repository }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Run ID:*\n${{ github.run_id }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Commit:*\n${{ github.sha }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Committer:*\n${{ github.actor }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run on GitHub>"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOKS
