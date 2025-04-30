@@ -3,42 +3,50 @@ name: CI-CD Pipeline
 on:
   push:
     branches:
-      - main
+      - testcicd
   workflow_dispatch:
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
+      # Step 1: Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Step 2: Set up Go environment
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.1'
+          go-version: "1.24.1"
 
+      # Step 3: Install Go dependencies
       - name: Install dependencies
         run: go mod download
 
+      # Step 4: Run Go vet to check for code issues
       - name: Run go vet
         run: go vet ./...
 
+      # Step 5: Build the Go binary
       - name: Build binary
-        run: go build -o authuseradminservice ./cmd
+        run: go build -o codeexecutionengine ./cmd
 
+      # Step 6: Log in to Docker Hub
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Step 7: Build and push Docker image
       - name: Build and push Docker image
         run: |
-          docker build -t lijuthomas/authuseradminservice:${{ github.sha }} -t lijuthomas/authuseradminservice:latest .
-          docker push lijuthomas/authuseradminservice:${{ github.sha }}
-          docker push lijuthomas/authuseradminservice:latest
+          docker build -t lijuthomas/codeexecutionengine:${{ github.sha }} -t lijuthomas/codeexecutionengine:latest .
+          docker push lijuthomas/codeexecutionengine:${{ github.sha }}
+          docker push lijuthomas/codeexecutionengine:latest
 
+      # Step 8: Deploy to EC2
       - name: Deploy to EC2
         env:
           EC2_HOST: ${{ secrets.EC2_SERVER_IP }}
@@ -46,17 +54,15 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          echo "$SSH_KEY" > ssh_key.pem
-          chmod 600 ssh_key.pem
-          ssh -o StrictHostKeyChecking=no -i ssh_key.pem ubuntu@$EC2_HOST << EOF
-            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
-            docker stop authuseradminservice || true
-            docker rm authuseradminservice || true
-            docker pull lijuthomas/authuseradminservice:latest
-            docker run -d --name authuseradminservice -p 50051:50051 \
-              -e POSTGRESDSN="host=localhost port=5432 user=admin password=password dbname=xcodedev sslmode=disable" \
-              -e AUTHUSERADMIN_REDIS_URL=redis://localhost:6379 \
-              -e JWT_SECRET=your_jwt_secret \
-              lijuthomas/authuseradminservice:latest
-            go get github.com/lijuuu/GlobalProtoXcode@latest
-          EOF
+          printf "%s" "$SSH_KEY" > key.pem
+          chmod 600 key.pem
+          ssh -i key.pem -o StrictHostKeyChecking=no ubuntu@$EC2_HOST '
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin &&
+            docker stop codeexecutionengine || true &&
+            docker rm codeexecutionengine || true &&
+            docker pull lijuthomas/codeexecutionengine:latest &&
+            docker run -d --name codeexecutionengine -p 50053:50053 \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              lijuthomas/codeexecutionengine:latest
+          '
+          rm -f key.pem
