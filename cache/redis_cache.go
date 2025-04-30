@@ -12,6 +12,7 @@ import (
 // rediscache manages redis cache operations
 type RedisCache struct {
 	client *redis.Client
+	existingCache map[string]struct{}
 }
 
 // newrediscache initializes a new redis cache client
@@ -21,11 +22,15 @@ func NewRedisCache(addr, password string, db int) *RedisCache {
 		Password: password,
 		DB:       db,
 	})
-	return &RedisCache{client: client}
+	return &RedisCache{client: client,existingCache: make(map[string]struct{})}
 }
 
 // set stores a value in redis with expiration
 func (r *RedisCache) Set(key string, value interface{}, expiration time.Duration) error {
+
+	//store on the redis struct
+	r.existingCache[key] = struct{}{}
+
 	log.Printf("cache: setting key '%s' with expiration %v", key, expiration)
 	err := r.client.Set(context.Background(), key, value, expiration).Err()
 	if err != nil {

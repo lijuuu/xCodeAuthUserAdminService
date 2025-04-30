@@ -1,1 +1,6 @@
 .env
+/tmp/
+/tmp/*
+gin.log
+app.log
+*.log
