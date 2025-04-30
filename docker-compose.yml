@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+    deploy:
+      resources:
+        limits:
+          memory: 100m
+          cpus: '0.2'
+
+  mongo:
+    image: mongo:6.0
+    ports:
+      - "27017:27017"
+    deploy:
+      resources:
+        limits:
+          memory: 300m
+          cpus: '0.4'
+
+  postgres:
+    image: postgres:15
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: xcodedev
+    deploy:
+      resources:
+        limits:
+          memory: 400m
+          cpus: '0.6'
