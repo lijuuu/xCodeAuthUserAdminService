@@ -1871,7 +1871,7 @@ func (r *UserRepository) CreateForgotPasswordToken(email, token string) (string,
 	}
 
 	if r.config.APPURL != "" {
-		resetLink := fmt.Sprintf("http://localhost:5173/reset-password?token=%s&email=%s", token, user.Email)
+		resetLink := fmt.Sprintf("%v/reset-password?token=%s&email=%s", configs.LoadConfig().FRONTENDURL, token, user.Email)
 		if err := r.SendForgotPasswordEmail(user.Email, resetLink); err != nil {
 			r.logger.Log(zapcore.ErrorLevel, traceID, "Failed to send password reset email", map[string]any{
 				"method": "CreateForgotPasswordToken",
