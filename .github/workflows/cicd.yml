@@ -17,7 +17,7 @@ jobs:
         uses: slackapi/slack-github-action@v1.27.0
         with:
           slack-bot-token: ${{ secrets.SLACK_WEBHOOK_URL }}
-          channel-id: 'ci-cd-notifications'  
+          channel-id: "ci-cd-notifications"
           payload: |
             {
               "blocks": [
@@ -95,6 +95,12 @@ jobs:
           chmod 600 ssh_key.pem
           scp -o StrictHostKeyChecking=no -i ssh_key.pem authuseradmin ubuntu@$EC2_HOST:/tmp/authuseradmin
           ssh -o StrictHostKeyChecking=no -i ssh_key.pem ubuntu@$EC2_HOST '
+            sudo mkdir -p /var/log/service &&
+            sudo touch /var/log/service/app.log &&
+            sudo chown root:root /var/log/service &&
+            sudo chmod 755 /var/log/service &&
+            sudo chown root:root /var/log/service/app.log &&
+            sudo chmod 644 /var/log/service/app.log &&
             sudo systemctl stop authuseradmin.service || true &&
             sudo mv /tmp/authuseradmin /usr/local/bin/authuseradmin &&
             sudo chmod +x /usr/local/bin/authuseradmin &&
@@ -112,7 +118,7 @@ jobs:
         uses: slackapi/slack-github-action@v1.27.0
         with:
           slack-bot-token: ${{ secrets.SLACK_WEBHOOK_URL }}
-          channel-id: 'ci-cd-notifications'  
+          channel-id: "ci-cd-notifications"
           payload: |
             {
               "blocks": [
@@ -163,7 +169,7 @@ jobs:
         uses: slackapi/slack-github-action@v1.27.0
         with:
           slack-bot-token: ${{ secrets.SLACK_WEBHOOK_URL }}
-          channel-id: 'ci-cd-notifications'  
+          channel-id: "ci-cd-notifications"
           payload: |
             {
               "blocks": [
