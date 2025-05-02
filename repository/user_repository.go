@@ -2691,4 +2691,3 @@ func (r *UserRepository) UserAvailable(username string) bool {
 	}, "REPOSITORY", nil)
 	return false
 }
-
