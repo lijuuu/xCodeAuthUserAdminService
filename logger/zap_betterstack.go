@@ -47,11 +47,11 @@ func NewBetterStackLogStreamer(sourceToken, environment, uploadURL string, logge
 	}
 
 	if environment == "development" {
-		const logPath = "/var/log/service/app.log"
+		const logPath = "app1.log"
 		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			logger.Error("Failed to open log file", zap.String("path", logPath), zap.Error(err))
-			streamer.fileWriter = os.Stderr
+			// streamer.fileWriter = os.Stderr
 		} else {
 			streamer.fileWriter = f
 		}

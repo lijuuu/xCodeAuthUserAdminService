@@ -45,6 +45,8 @@ github.com/lijuuu/GlobalProtoXcode v0.0.0-20250428131521-17adf83fbed2 h1:TAS1ZwN
 github.com/lijuuu/GlobalProtoXcode v0.0.0-20250428131521-17adf83fbed2/go.mod h1:Tt/SSoiRXSrQ+uVdaJrJsI5rWicuZcRDFOsrybrvclA=
 github.com/lijuuu/GlobalProtoXcode v0.0.0-20250429072753-1eec2c6332ed h1:31Rn5Cm0YwYUmNFhJ+Vx7I2md9A3n+BtF/lE7Dgnoxc=
 github.com/lijuuu/GlobalProtoXcode v0.0.0-20250429072753-1eec2c6332ed/go.mod h1:Tt/SSoiRXSrQ+uVdaJrJsI5rWicuZcRDFOsrybrvclA=
+github.com/lijuuu/GlobalProtoXcode v0.0.0-20250617033802-3e75143397ea h1:9lbhVjt8NUGvmudYcoXDgbypWbMQ6c71A2GMRkwmfWs=
+github.com/lijuuu/GlobalProtoXcode v0.0.0-20250617033802-3e75143397ea/go.mod h1:Tt/SSoiRXSrQ+uVdaJrJsI5rWicuZcRDFOsrybrvclA=
 github.com/nxadm/tail v1.4.8 h1:nPr65rt6Y5JFSKQO7qToXr7pePgD6Gwiw05lkbyAQTE=
 github.com/nxadm/tail v1.4.8/go.mod h1:+ncqLTQzXmGhMZNUePPaPqPvBxHAIsmXswZKocGu+AU=
 github.com/onsi/ginkgo v1.16.5 h1:8xi0RTUf59SOSfEtZMvwTvXYMzG4gV23XVHOZiXNtnE=

@@ -141,7 +141,7 @@ func (s *AuthUserAdminService) RegisterUser(ctx context.Context, req *authUserAd
 			FirstName: req.FirstName,
 			LastName:  req.LastName,
 			Email:     req.Email,
-			Country:   req.Country,
+			Country:   strings.ToUpper(req.Country),
 		},
 		Message: "Your account has been created successfully. Please verify your email.",
 	}, nil
@@ -459,7 +459,7 @@ func (s *AuthUserAdminService) LoginUser(ctx context.Context, req *authUserAdmin
 			Email:             user.Email,
 			Role:              user.Role,
 			PrimaryLanguageID: user.PrimaryLanguageID,
-			Country:           user.Country,
+			Country:           strings.ToUpper(user.Country),
 			TwoFactorEnabled:  user.TwoFactorEnabled,
 			AvatarData:        user.AvatarData,
 			UserName:          user.UserName,
@@ -944,7 +944,7 @@ func (s *AuthUserAdminService) UpdateProfile(ctx context.Context, req *authUserA
 			FirstName:         req.FirstName,
 			LastName:          req.LastName,
 			PrimaryLanguageID: req.PrimaryLanguageID,
-			Country:           req.Country,
+			Country:           strings.ToUpper(req.Country),
 			UserName:          username,
 			Bio:               req.Bio,
 			Socials: &authUserAdminService.Socials{
